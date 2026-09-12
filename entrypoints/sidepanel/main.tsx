@@ -12,32 +12,36 @@ function faviconUrl(pageUrl: string, size: number): string {
   return url.toString();
 }
 
+function clearFavicon(holder: HTMLElement): void {
+  holder.style.removeProperty('background-image');
+  holder.style.removeProperty('background-position');
+  holder.style.removeProperty('background-repeat');
+  holder.style.removeProperty('background-size');
+  holder.style.removeProperty('color');
+}
+
 function applyFavicon(holder: HTMLElement, pageUrl: string, requestedSize: number, displayedSize: number): void {
   if (!pageUrl || holder.dataset.faviconUrl === pageUrl) return;
 
   holder.dataset.faviconUrl = pageUrl;
-  const fallback = holder.dataset.faviconFallback || holder.textContent?.trim() || '?';
-  holder.dataset.faviconFallback = fallback;
-
+  const source = faviconUrl(pageUrl, requestedSize);
   const image = new Image();
-  image.alt = '';
   image.decoding = 'async';
-  image.draggable = false;
-  image.setAttribute('aria-hidden', 'true');
-  image.style.width = `${displayedSize}px`;
-  image.style.height = `${displayedSize}px`;
-  image.style.objectFit = 'contain';
-  image.style.borderRadius = '3px';
 
   image.addEventListener('load', () => {
-    if (holder.dataset.faviconUrl === pageUrl) holder.replaceChildren(image);
+    if (holder.dataset.faviconUrl !== pageUrl) return;
+    holder.style.backgroundImage = `url("${source}")`;
+    holder.style.backgroundPosition = 'center';
+    holder.style.backgroundRepeat = 'no-repeat';
+    holder.style.backgroundSize = `${displayedSize}px ${displayedSize}px`;
+    holder.style.color = 'transparent';
   }, { once: true });
 
   image.addEventListener('error', () => {
-    if (holder.dataset.faviconUrl === pageUrl) holder.textContent = fallback;
+    if (holder.dataset.faviconUrl === pageUrl) clearFavicon(holder);
   }, { once: true });
 
-  image.src = faviconUrl(pageUrl, requestedSize);
+  image.src = source;
 }
 
 function hydrateFavicons(): void {
