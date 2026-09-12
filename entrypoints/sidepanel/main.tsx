@@ -22,7 +22,6 @@ function applyFavicon(holder: HTMLElement, pageUrl: string, requestedSize: numbe
   const image = new Image();
   image.alt = '';
   image.decoding = 'async';
-  image.loading = 'lazy';
   image.draggable = false;
   image.setAttribute('aria-hidden', 'true');
   image.style.width = `${displayedSize}px`;
