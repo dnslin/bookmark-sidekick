@@ -1,0 +1,63 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+
+      - name: Verify tag matches package version
+        shell: bash
+        run: |
+          package_version="$(node -p "require('./package.json').version")"
+          tag_version="${GITHUB_REF_NAME#v}"
+          if [[ "$tag_version" != "$package_version" ]]; then
+            echo "Tag $GITHUB_REF_NAME does not match package.json version $package_version" >&2
+            exit 1
+          fi
+
+      - run: npm ci
+      - run: npm run check
+      - run: npm run zip
+
+      - name: Prepare release assets
+        id: package
+        shell: bash
+        run: |
+          zip_path="$(find .output -maxdepth 1 -type f -name '*-chrome.zip' -print -quit)"
+          if [[ -z "$zip_path" ]]; then
+            echo "Chrome ZIP was not generated under .output" >&2
+            exit 1
+          fi
+
+          mkdir -p release-assets
+          asset="release-assets/bookmark-sidekick-${GITHUB_REF_NAME}-chrome.zip"
+          cp "$zip_path" "$asset"
+          sha256sum "$asset" | sed 's#release-assets/##' > "${asset}.sha256"
+
+          echo "asset=$asset" >> "$GITHUB_OUTPUT"
+          echo "checksum=${asset}.sha256" >> "$GITHUB_OUTPUT"
+
+      - name: Create GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "$GITHUB_REF_NAME" \
+            "${{ steps.package.outputs.asset }}" \
+            "${{ steps.package.outputs.checksum }}" \
+            --verify-tag \
+            --generate-notes \
+            --title "$GITHUB_REF_NAME"
