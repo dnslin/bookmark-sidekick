@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { inspectBackup } from '../src/backup.ts';
+import { inspectBackup } from '../src/backup-format.ts';
 
 const entry = (category, snapshot = undefined) => ({
   url: 'https://example.com/',
