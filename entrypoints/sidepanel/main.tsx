@@ -4,6 +4,9 @@ import { App } from '../../src/App';
 import './style.css';
 import './restore.css';
 
+// Reserve the scrollbar space so switching between short and long pages does not resize the layout.
+document.documentElement.style.setProperty('scrollbar-gutter', 'stable');
+
 let selectedBookmarkUrl = '';
 
 function faviconUrl(pageUrl: string, size: number): string {
