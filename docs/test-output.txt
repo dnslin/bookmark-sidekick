@@ -1,0 +1,196 @@
+
+> bookmark-sidekick@0.1.0 test
+> node --experimental-strip-types --test tests/*.test.mjs
+
+TAP version 13
+# (node:731) ExperimentalWarning: Type Stripping is an experimental feature and might change at any time
+# (Use `node --trace-warnings ...` to show where the warning was created)
+# Subtest: 只移除明确的跟踪参数，保留业务参数与锚点
+ok 1 - 只移除明确的跟踪参数，保留业务参数与锚点
+  ---
+  duration_ms: 2.392058
+  type: 'test'
+  ...
+# Subtest: ref/source/signature 参数不能误删
+ok 2 - ref/source/signature 参数不能误删
+  ---
+  duration_ms: 0.327786
+  type: 'test'
+  ...
+# Subtest: 跟踪参数清理大小写不敏感
+ok 3 - 跟踪参数清理大小写不敏感
+  ---
+  duration_ms: 0.314086
+  type: 'test'
+  ...
+# Subtest: 非 HTTP 页面不发送给网页分析器
+ok 4 - 非 HTTP 页面不发送给网页分析器
+  ---
+  duration_ms: 1.292704
+  type: 'test'
+  ...
+# Subtest: 允许本地模型使用 HTTP
+ok 5 - 允许本地模型使用 HTTP
+  ---
+  duration_ms: 0.373479
+  type: 'test'
+  ...
+# Subtest: 读取书签保留原始层级，不修改传入树
+ok 6 - 读取书签保留原始层级，不修改传入树
+  ---
+  duration_ms: 4.042467
+  type: 'test'
+  ...
+# Subtest: 同 URL 的多个原生书签仍保持独立 ID
+ok 7 - 同 URL 的多个原生书签仍保持独立 ID
+  ---
+  duration_ms: 0.459582
+  type: 'test'
+  ...
+# Subtest: 无标题书签回退为 URL
+ok 8 - 无标题书签回退为 URL
+  ---
+  duration_ms: 0.190662
+  type: 'test'
+  ...
+# Subtest: 初次读取不赋予正式分类
+ok 9 - 初次读取不赋予正式分类
+  ---
+  duration_ms: 0.596775
+  type: 'test'
+  ...
+# Subtest: 重复同步保留已经确认的分类
+ok 10 - 重复同步保留已经确认的分类
+  ---
+  duration_ms: 0.63789
+  type: 'test'
+  ...
+# Subtest: 只移动文件夹不让正文版本失效
+ok 11 - 只移动文件夹不让正文版本失效
+  ---
+  duration_ms: 0.284125
+  type: 'test'
+  ...
+# Subtest: URL 变化会清除旧的 AI 分类和访问状态
+ok 12 - URL 变化会清除旧的 AI 分类和访问状态
+  ---
+  duration_ms: 0.157705
+  type: 'test'
+  ...
+# Subtest: 标题变化会使尚未应用的建议过期
+ok 13 - 标题变化会使尚未应用的建议过期
+  ---
+  duration_ms: 0.219963
+  type: 'test'
+  ...
+# Subtest: 被删除的书签不能应用建议
+ok 14 - 被删除的书签不能应用建议
+  ---
+  duration_ms: 0.08286
+  type: 'test'
+  ...
+# Subtest: 建议不能串到另一个书签
+ok 15 - 建议不能串到另一个书签
+  ---
+  duration_ms: 0.074653
+  type: 'test'
+  ...
+# Subtest: 未经调用确认逻辑，草稿不会修改书签
+ok 16 - 未经调用确认逻辑，草稿不会修改书签
+  ---
+  duration_ms: 0.164324
+  type: 'test'
+  ...
+# Subtest: 确认后生成正式分类，仍不修改输入对象
+ok 17 - 确认后生成正式分类，仍不修改输入对象
+  ---
+  duration_ms: 0.142396
+  type: 'test'
+  ...
+# Subtest: 过期建议必须拒绝，不能覆盖手动修改
+ok 18 - 过期建议必须拒绝，不能覆盖手动修改
+  ---
+  duration_ms: 0.426957
+  type: 'test'
+  ...
+# Subtest: 后台中断后，过期运行任务可重新领取
+ok 19 - 后台中断后，过期运行任务可重新领取
+  ---
+  duration_ms: 0.1451
+  type: 'test'
+  ...
+# Subtest: 失败任务不会自动无限重试
+ok 20 - 失败任务不会自动无限重试
+  ---
+  duration_ms: 0.095191
+  type: 'test'
+  ...
+# Subtest: 待处理任务可以领取
+ok 21 - 待处理任务可以领取
+  ---
+  duration_ms: 0.078228
+  type: 'test'
+  ...
+# Subtest: 模型必须完整返回所有输入 ID
+ok 22 - 模型必须完整返回所有输入 ID
+  ---
+  duration_ms: 0.529225
+  type: 'test'
+  ...
+# Subtest: 模型的重复 ID 输出被拒绝
+ok 23 - 模型的重复 ID 输出被拒绝
+  ---
+  duration_ms: 0.13664
+  type: 'test'
+  ...
+# Subtest: 404 和 410 标记为可能失效
+ok 24 - 404 和 410 标记为可能失效
+  ---
+  duration_ms: 0.147127
+  type: 'test'
+  ...
+# Subtest: 登录、限流和反爬不是失效
+ok 25 - 登录、限流和反爬不是失效
+  ---
+  duration_ms: 0.121615
+  type: 'test'
+  ...
+# Subtest: 5xx 或其他未知响应不误判失效
+ok 26 - 5xx 或其他未知响应不误判失效
+  ---
+  duration_ms: 0.103378
+  type: 'test'
+  ...
+# Subtest: 成功响应标记可访问
+ok 27 - 成功响应标记可访问
+  ---
+  duration_ms: 0.113915
+  type: 'test'
+  ...
+# Subtest: 模型错误不能泄漏原始请求密钥
+ok 28 - 模型错误不能泄漏原始请求密钥
+  ---
+  duration_ms: 0.136956
+  type: 'test'
+  ...
+# Subtest: 超时和鉴权错误提供可操作提示
+ok 29 - 超时和鉴权错误提供可操作提示
+  ---
+  duration_ms: 0.136381
+  type: 'test'
+  ...
+# Subtest: 域名展示不崩溃
+ok 30 - 域名展示不崩溃
+  ---
+  duration_ms: 0.145428
+  type: 'test'
+  ...
+1..30
+# tests 30
+# suites 0
+# pass 30
+# fail 0
+# cancelled 0
+# skipped 0
+# todo 0
+# duration_ms 335.659253
