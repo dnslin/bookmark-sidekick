@@ -2,7 +2,7 @@
   "name": "bookmark-sidekick",
   "description": "Chrome 侧边栏个人 AI 书签助手",
   "private": true,
-  "version": "0.1.3",
+  "version": "0.1.4",
   "type": "module",
   "engines": {
     "node": ">=22.16.0"
