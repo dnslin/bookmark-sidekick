@@ -9,7 +9,8 @@ import type { Bookmark, Snapshot, Suggestion } from './domain';
 import { defaultSettings, getSettings, isConfigured, originPattern, setSettings, settingsSchema } from './settings';
 import type { Settings } from './settings';
 import { rpc } from './messages';
-import { exportBackup, importBackup } from './backup';
+import { exportBackup, importBackup, inspectBackup } from './backup';
+import type { BackupPreview } from './backup';
 
 type Page = 'home' | 'categories' | 'review' | 'detail' | 'reader' | 'settings';
 const stateLabels = { unknown: '尚未确认可访问性', available: '原网页可访问', unavailable: '原网页可能已失效', restricted: '网站限制访问' };
@@ -57,10 +58,11 @@ export function App() {
     return () => clearTimeout(timer);
   }, [notice]);
 
-  async function run(label: string, fn: () => Promise<void>) {
-    if (busy) return;
+  async function run(label: string, fn: () => Promise<void>): Promise<boolean> {
+    if (busy) return false;
     setBusy(label);
-    try { await fn(); } catch (e) { setNotice(e instanceof Error ? e.message : '操作失败，请重试'); }
+    try { await fn(); return true; }
+    catch (e) { setNotice(e instanceof Error ? e.message : '操作失败，请重试'); return false; }
     finally { setBusy(''); }
   }
   function details(b: Bookmark) { selectId(b.id); setPage('detail'); }
@@ -161,13 +163,15 @@ export function App() {
         const blob = new Blob([JSON.stringify(await exportBackup(), null, 2)], { type: 'application/json' });
         const url = URL.createObjectURL(blob);
         const a = document.createElement('a'); a.href = url; a.download = `bookmark-sidekick-${new Date().toISOString().slice(0, 10)}.json`; a.click();
-        setTimeout(() => URL.revokeObjectURL(url), 60_000); setNotice('已导出分类与快照；不包含 API Key');
-      })} onRestore={file => void run('restore', async () => {
-        if (file.size > 100 * 1024 * 1024) throw new Error('MVP 暂支持 100 MB 以内的备份文件');
-        if (!window.confirm('将恢复匹配网址的分类与快照，覆盖插件内现有分类。不会改动 Chrome 文件夹。继续？')) return;
+        setTimeout(() => URL.revokeObjectURL(url), 60_000); setNotice('已导出模型配置、分类、书签数据与快照');
+      })} onRestore={(input, permission) => run('restore', async () => {
+        if (!await permission) throw new Error('未授权模型接口，未执行恢复');
         await rpc({ type: 'SYNC' });
-        const result = await importBackup(JSON.parse(await file.text()));
-        setNotice(`已恢复 ${result.restored} 项，跳过 ${result.skipped} 项。未匹配的 Chrome 书签不会创建`);
+        const result = await importBackup(input);
+        updateSettings(result.settings);
+        setNotice(result.settingsRestored
+          ? `已恢复 ${result.restored} 项，跳过 ${result.skipped} 项；模型配置和 ${result.categoryCount} 个分类已恢复`
+          : `已恢复 ${result.restored} 项，跳过 ${result.skipped} 项；旧版备份已补回 ${result.categoryCount} 个分类`);
       })}/>}
       {page === 'detail' && selected && <Detail key={selected.id} bookmark={selected} snapshot={snapshot} categories={settings.categories} busy={!!busy} configured={configured} run={run} notify={setNotice} onReader={() => setPage('reader')} onOpen={() => void run('open', () => open(selected))} onDeleted={() => setPage('home')}/>}
       {page === 'reader' && selected && snapshot && <Reader bookmark={selected} snapshot={snapshot}/>}
@@ -181,7 +185,7 @@ function BookmarkRow({ bookmark: b, onOpen, onDetails }: { bookmark: Bookmark; o
   return <article className={`bookmark-row ${b.linkState === 'unavailable' ? 'is-unavailable' : ''}`}><button className="bookmark-main" onClick={onOpen} title={b.url}><span className="site-icon">{hostname(b.url).replace(/^www\./, '').slice(0, 1).toUpperCase()}</span><span className="bookmark-copy"><strong>{b.title}</strong><span>{hostname(b.url)}{b.category && <> · <em>{b.category}</em></>}</span>{b.summary && <small>{b.summary}</small>}{b.linkState === 'unavailable' && <small className="danger-text">原网页可能已失效</small>}</span></button><button className="icon-button item-menu" onClick={onDetails} aria-label={`查看 ${b.title} 的详情`}><MoreHorizontal size={18}/></button></article>;
 }
 
-type Runner = (label: string, fn: () => Promise<void>) => Promise<void>;
+type Runner = (label: string, fn: () => Promise<void>) => Promise<boolean>;
 function Review({ drafts, bookmarks, categories, busy, working, run, notify }: { drafts: Suggestion[]; bookmarks: Bookmark[]; categories: string[]; busy: boolean; working: number; run: Runner; notify: (s: string) => void }) {
   const [filter, setFilter] = useState('');
   const [uncertain, setUncertain] = useState(false);
@@ -203,10 +207,18 @@ function Review({ drafts, bookmarks, categories, busy, working, run, notify }: {
   </div>;
 }
 
-function SettingsForm({ value, busy, unclassifiedCount, onSave, notify, onBackup, onRestore }: { value: Settings; busy: boolean; unclassifiedCount: number; onSave: (s: Settings, test: boolean) => Promise<void>; notify: (s: string) => void; onBackup: () => void; onRestore: (file: File) => void }) {
+type RestoreCandidate = { fileName: string; input: unknown; preview: BackupPreview };
+function SettingsForm({ value, busy, unclassifiedCount, onSave, notify, onBackup, onRestore }: { value: Settings; busy: boolean; unclassifiedCount: number; onSave: (s: Settings, test: boolean) => Promise<void>; notify: (s: string) => void; onBackup: () => void; onRestore: (input: unknown, permission: Promise<boolean>) => Promise<boolean> }) {
   const [form, setForm] = useState(value);
   const [categoryText, setCategoryText] = useState(value.categories.join('，'));
   const [saving, setSaving] = useState(false);
+  const [restoreCandidate, setRestoreCandidate] = useState<RestoreCandidate>();
+
+  useEffect(() => {
+    setForm(value);
+    setCategoryText(value.categories.join('，'));
+  }, [value]);
+
   async function submit(test: boolean) {
     if (saving || busy) return;
     const parsed = settingsSchema.safeParse({ ...form, baseUrl: form.baseUrl.trim().replace(/\/+$/, ''), categories: categoryText.split(/[,，\n]/).map(s => s.trim()).filter(Boolean) });
@@ -220,15 +232,47 @@ function SettingsForm({ value, busy, unclassifiedCount, onSave, notify, onBackup
     } catch { notify('保存失败，请检查模型地址和访问权限'); }
     finally { setSaving(false); }
   }
+
+  async function chooseBackup(file: File) {
+    if (file.size > 100 * 1024 * 1024) { notify('MVP 暂支持 100 MB 以内的备份文件'); return; }
+    try {
+      const input = JSON.parse(await file.text()) as unknown;
+      setRestoreCandidate({ fileName: file.name, input, preview: inspectBackup(input) });
+    } catch {
+      setRestoreCandidate(undefined);
+      notify('备份文件无法读取或格式不正确');
+    }
+  }
+
+  async function confirmRestore() {
+    const candidate = restoreCandidate;
+    if (!candidate || busy) return;
+    const model = candidate.preview.model;
+    const permission = model?.consent && model.baseUrl
+      ? chrome.permissions.request({ origins: [originPattern(model.baseUrl)] })
+      : Promise.resolve(true);
+    if (await onRestore(candidate.input, permission)) setRestoreCandidate(undefined);
+  }
+
   return <div className="settings-form"><div className="page-heading"><h2>模型与数据</h2><p>使用你自己的 OpenAI-compatible 接口。不需要账号或服务器。</p></div>
     <label>API 地址<input type="url" placeholder="https://你的接口地址/v1" value={form.baseUrl} autoComplete="off" onChange={e => setForm({ ...form, baseUrl: e.target.value })}/><small>填写接口基础地址，通常以 /v1 结尾，不要包含 /chat/completions。</small></label>
-    <label>API Key<input type="password" placeholder="本地模型可留空" value={form.apiKey} autoComplete="off" spellCheck={false} onChange={e => setForm({ ...form, apiKey: e.target.value })}/><small>仅保存在当前浏览器，不参与备份或 Chrome 同步。</small></label>
+    <label>API Key<input type="password" placeholder="本地模型可留空" value={form.apiKey} autoComplete="off" spellCheck={false} onChange={e => setForm({ ...form, apiKey: e.target.value })}/><small>保存在当前浏览器；导出完整备份时会以明文写入 JSON 文件。</small></label>
     <label>模型名称<input placeholder="填写接口提供的准确模型 ID" value={form.model} autoComplete="off" onChange={e => setForm({ ...form, model: e.target.value })}/></label>
     <label>分类<textarea rows={3} value={categoryText} onChange={e => setCategoryText(e.target.value)} /><small>用逗号分隔。模型只能从这些分类中选择；不会改名或合并已有分类。</small></label>
     <label className="consent"><input type="checkbox" checked={form.consent} onChange={e => setForm({ ...form, consent: e.target.checked })}/><span>允许向以上模型发送书签标题、网址、原文件夹，以及已保存的正文，用于分类和摘要。</span></label>
     <div className="button-pair"><button className="button secondary" disabled={saving || busy} onClick={() => void submit(true)}>测试连接</button><button className="button" disabled={saving || busy} onClick={() => void submit(false)}>{saving || busy ? '处理中…' : unclassifiedCount && form.consent ? '保存并分析' : '保存设置'}</button></div>
-    <div className="divider"/><h3>数据备份</h3><p className="help">备份分类与阅读快照，不包含 API Key。恢复时只匹配现有 Chrome 书签；原生书签请通过 Chrome 自带功能备份。</p><div className="button-pair"><button className="button secondary" onClick={onBackup} disabled={busy}>导出备份</button><label className="button secondary file-button">恢复备份<input type="file" accept=".json,application/json" disabled={busy} onChange={e => { const file = e.target.files?.[0]; if (file) onRestore(file); e.target.value = ''; }}/></label></div>
-    <p className="privacy-note"><AlertCircle size={15}/>扩展卸载后，AI 分类和快照会被清除，Chrome 原书签仍在。API Key 保存在本地，并非加密保险箱。</p>
+    <div className="divider"/><h3>完整备份</h3><p className="help">包含模型地址、API Key、自定义分类、书签分类/标签/摘要和阅读快照。恢复只匹配现有 Chrome 书签，不会新增、删除或移动原生书签。</p>
+    <div className="button-pair"><button className="button secondary" onClick={onBackup} disabled={busy}>导出备份</button><label className="button secondary file-button">选择备份文件<input type="file" accept=".json,application/json" disabled={busy} onChange={e => { const file = e.target.files?.[0]; if (file) void chooseBackup(file); e.target.value = ''; }}/></label></div>
+    {restoreCandidate && <section className="restore-preview" aria-label="恢复预览">
+      <div className="restore-preview-head"><div><strong>{restoreCandidate.fileName}</strong><span>{restoreCandidate.preview.exportedAt ? new Date(restoreCandidate.preview.exportedAt).toLocaleString('zh-CN') : `备份格式 v${restoreCandidate.preview.version}`}</span></div><button className="icon-button" aria-label="取消选择备份" onClick={() => setRestoreCandidate(undefined)}><X size={15}/></button></div>
+      <div className="restore-preview-stats"><span><strong>{restoreCandidate.preview.entryCount}</strong>书签</span><span><strong>{restoreCandidate.preview.snapshotCount}</strong>快照</span><span><strong>{restoreCandidate.preview.categories.length}</strong>分类</span></div>
+      {restoreCandidate.preview.model
+        ? <p>模型：{restoreCandidate.preview.model.model || '未配置'} · {restoreCandidate.preview.model.hasApiKey ? '包含 API Key' : 'API Key 为空'}</p>
+        : <p>旧版备份不含模型配置；将保留当前模型配置，并从书签数据补回分类。</p>}
+      <p className="restore-warning">{restoreCandidate.preview.model ? '确认后将覆盖当前模型配置、自定义分类，以及匹配书签的分类与快照。' : '确认后将覆盖匹配书签的分类与快照；当前模型配置不会改变。'}</p>
+      <div className="button-pair"><button className="button secondary" disabled={busy} onClick={() => setRestoreCandidate(undefined)}>取消</button><button className="button" disabled={busy} onClick={() => void confirmRestore()}>{busy ? '恢复中…' : '确认恢复'}</button></div>
+    </section>}
+    <p className="privacy-note"><AlertCircle size={15}/>备份文件包含明文 API Key，请只保存在可信位置。扩展卸载后，本地分类和快照仍会被清除。</p>
   </div>;
 }
 
