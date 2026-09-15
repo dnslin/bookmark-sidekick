@@ -1,11 +1,16 @@
 import { useEffect, useMemo, useState } from 'react';
+import { AnimatePresence, motion, useReducedMotion } from 'motion/react';
+import { SiteIcon } from './components/SiteIcon';
+import { Review } from './components/Review';
+import { groupBookmarksByDate, filterBookmarks } from './library';
+import { Navigation, type LibraryPage } from './components/Navigation';
 import { useLiveQuery } from 'dexie-react-hooks';
 import Fuse from 'fuse.js';
 import DOMPurify from 'dompurify';
-import { ArrowLeft, Bookmark as BookmarkIcon, Check, ChevronRight, ExternalLink, FileText, Folder, MoreHorizontal, Pause, Play, Plus, RefreshCw, Search, Settings as SettingsIcon, Sparkles, Trash2, X, AlertCircle } from 'lucide-react';
+import { ArrowLeft, Bookmark as BookmarkIcon, BookmarkPlus, Check, ChevronRight, ExternalLink, FileText, Folder, MoreHorizontal, Pause, Play, Plus, RefreshCw, Search, Settings as SettingsIcon, Sparkles, Trash2, X, AlertCircle } from 'lucide-react';
 import { db } from './db';
 import { cleanUrl, hostname, isWebUrl } from './domain';
-import type { Bookmark, Snapshot, Suggestion } from './domain';
+import type { Bookmark, Snapshot } from './domain';
 import { defaultSettings, getSettings, isConfigured, originPattern, setSettings, settingsSchema } from './settings';
 import type { Settings } from './settings';
 import { rpc } from './messages';
@@ -16,13 +21,17 @@ type Page = 'home' | 'categories' | 'review' | 'detail' | 'reader' | 'settings';
 const stateLabels = { unknown: '尚未确认可访问性', available: '原网页可访问', unavailable: '原网页可能已失效', restricted: '网站限制访问' };
 
 export function App() {
+  const reducedMotion = useReducedMotion();
   const bookmarks = useLiveQuery(() => db.bookmarks.orderBy('addedAt').reverse().toArray(), [], []);
   const drafts = useLiveQuery(() => db.drafts.toArray(), [], []);
   const tasks = useLiveQuery(() => db.tasks.toArray(), [], []);
   const [settings, updateSettings] = useState<Settings>(defaultSettings);
   const [page, setPage] = useState<Page>('home');
   const [selectedId, selectId] = useState('');
-  const [category, filterCategory] = useState('');
+  const [category, filterCategory] = useState<string | null>(null);
+  const [tag, filterTag] = useState('');
+  const [showCategoryCreate, setShowCategoryCreate] = useState(false);
+  const [newCategory, setNewCategory] = useState('');
   const [query, search] = useState('');
   const [currentTab, setCurrentTab] = useState<chrome.tabs.Tab>();
   const [busy, setBusy] = useState('');
@@ -99,57 +108,62 @@ export function App() {
     });
   }
   const filtered = useMemo(() => {
-    const scoped = category ? bookmarks.filter(b => b.category === category) : bookmarks;
+    const scoped = filterBookmarks(bookmarks, category, tag);
     if (!query.trim()) return scoped;
     return new Fuse(scoped, { keys: [{ name: 'title', weight: 3 }, 'url', 'category', 'tags', 'summary'], threshold: 0.36, ignoreLocation: true })
       .search(query.trim()).map(r => r.item);
-  }, [bookmarks, query, category]);
+  }, [bookmarks, query, category, tag]);
   const counts = useMemo(() => {
     const map = new Map<string, number>();
     for (const b of bookmarks) if (b.category) map.set(b.category, (map.get(b.category) ?? 0) + 1);
-    return [...map.entries()].sort((a, b) => b[1] - a[1]);
-  }, [bookmarks]);
+    return [...new Set([...settings.categories, ...map.keys()])].map(name => [name, map.get(name) ?? 0] as const);
+  }, [bookmarks, settings.categories]);
 
-  const nav = (p: Page) => { setPage(p); filterCategory(''); search(''); };
+  const nav = (p: Page) => { setPage(p); filterCategory(null); filterTag(''); search(''); };
+  const tags = [...new Set(bookmarks.flatMap(b => b.tags))];
+  async function createCategory() {
+    const value = settingsSchema.safeParse({ ...settings, categories: [...settings.categories, newCategory.trim()] });
+    if (!value.success) { setNotice(value.error.issues[0]?.message || '请检查分类名称'); return; }
+    await run('category', async () => { await setSettings(value.data); updateSettings(value.data); setNewCategory(''); setShowCategoryCreate(false); });
+  }
   const tabPages = ['home', 'categories', 'review'].includes(page);
   return <div className="app" data-page={page}>
     <header className="app-header">
-      {tabPages ? <span className="brand-icon"><BookmarkIcon size={19} strokeWidth={2.4} /></span>
+      {tabPages ? <span className="brand-icon"><BookmarkIcon size={27} strokeWidth={1.6} /></span>
         : <button className="icon-button" aria-label="返回" onClick={() => setPage(page === 'reader' ? 'detail' : 'home')}><ArrowLeft size={20}/></button>}
-      <div className="brand-text"><strong>拾签<span className="version">0.1</span></strong><span>收藏之后，轻松找回</span></div>
+      <div className="brand-text"><strong>拾签</strong></div>
+      {tabPages && <button className="icon-button" aria-label="收藏当前网页" disabled={!!busy || !currentTab?.url || !isWebUrl(currentTab.url)} onClick={() => void saveCurrent()}><Plus size={25}/></button>}
       <button className={`icon-button ${page === 'settings' ? 'active-icon' : ''}`} aria-label="设置" onClick={() => setPage('settings')}><SettingsIcon size={19}/></button>
     </header>
 
-    {notice && <div className="toast" role="status"><span>{notice}</span><button className="icon-button" aria-label="关闭提示" onClick={() => setNotice('')}><X size={15}/></button></div>}
+    <AnimatePresence>{notice && <motion.div className="toast" role="status" initial={{ opacity: 0, y: reducedMotion ? 0 : -6 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0 }} transition={{ duration: 0.16 }}><span>{notice}</span><button className="icon-button" aria-label="关闭提示" onClick={() => setNotice('')}><X size={15}/></button></motion.div>}</AnimatePresence>
 
     {tabPages && <>
-      <div className="search-box"><Search size={17}/><input aria-label="搜索书签" placeholder="搜索书签、分类、域名…" value={query} onChange={e => { search(e.target.value); if (page !== 'home') setPage('home'); }}/>{query && <button className="icon-button" aria-label="清空搜索" onClick={() => search('')}><X size={14}/></button>}</div>
-      <div className="current-page">
-        <div className="eyebrow">当前页面</div>
-        <div className="current-content"><div className="current-text"><strong title={currentTab?.title}>{currentTab?.title || '打开网页，开始收藏'}</strong><span>{currentTab?.url ? hostname(currentTab.url) : '支持 HTTP / HTTPS 网页'}</span></div>
-          <button className={`button small ${existing ? 'secondary' : ''}`} disabled={!!busy || !currentTab?.url || !isWebUrl(currentTab.url)} onClick={() => existing ? details(existing) : void saveCurrent()}>{existing ? <Check size={15}/> : <Plus size={15}/>} {busy === 'save' ? '保存中' : existing ? '已收藏' : '收藏'}</button>
-        </div>
-      </div>
-      <nav className="tabs" aria-label="书签导航">
-        <button className={page === 'home' ? 'selected' : ''} onClick={() => nav('home')}>最近</button>
-        <button className={page === 'categories' ? 'selected' : ''} onClick={() => nav('categories')}>分类</button>
-        <button className={page === 'review' ? 'selected' : ''} onClick={() => nav('review')}>待确认{drafts.length > 0 && <span className="badge">{drafts.length}</span>}</button>
-      </nav>
+      <div className="search-box"><Search size={17}/><input aria-label="搜索书签" placeholder="搜索书签" value={query} onChange={e => { search(e.target.value); if (page !== 'home') setPage('home'); }}/>{query && <button className="icon-button" aria-label="清空搜索" onClick={() => search('')}><X size={14}/></button>}</div>
+      <div className="current-page"><div className="current-content">
+        <SiteIcon url={currentTab?.url || ''}/><div className="current-text"><span className="eyebrow">当前网页</span><strong title={currentTab?.title}>{currentTab?.title || '打开网页，开始收藏'}</strong></div>
+        <button className="save-current" disabled={!!busy || !currentTab?.url || !isWebUrl(currentTab.url)} onClick={() => existing ? details(existing) : void saveCurrent()}>{existing ? <Check size={22}/> : <BookmarkPlus size={22}/>} {busy === 'save' ? '保存中' : existing ? '已收藏' : '收藏'}</button>
+      </div></div>
+      <Navigation page={page as LibraryPage} pendingCount={drafts.length} onNavigate={nav}/>
     </>}
 
-    <main key={page} className="page-stage">
+    <motion.main key={page} className="page-stage" initial={{ opacity: 0, y: reducedMotion ? 0 : 6 }} animate={{ opacity: 1, y: 0 }} transition={{ duration: 0.18, ease: 'easeOut' }}>
       {page === 'home' && <>
-        {!ready && <div className="empty">正在读取 Chrome 书签…</div>}
-        {ready && !configured && <div className="intro-card"><Sparkles size={21}/><h2>让书签自己找到位置</h2><p>已加载 {bookmarks.length} 个书签。配置模型后生成分类建议，确认前不应用分类。</p><button className="button full" onClick={() => setPage('settings')}>配置 AI 分类 <ChevronRight size={16}/></button></div>}
+        <div className="section-heading"><h1>{query ? '搜索结果' : tag ? `标签 · ${tag}` : category !== null ? category || '未分类' : '最近收藏'}</h1><button className="text-button" onClick={() => nav('home')}>全部</button></div>
+        {!ready && <div className="empty" role="status">正在读取 Chrome 书签…</div>}
         {configured && remaining.length > 0 && <div className="job-card"><div className="row-between"><span><span className={settings.paused ? '' : 'pulse-dot'}/>{settings.paused ? '分析已暂停' : '正在生成分类建议'}</span><button className="icon-button" aria-label={settings.paused ? '继续分析' : '暂停分析'} onClick={() => void run('pause', async () => { await rpc({ type: 'PAUSE', paused: !settings.paused }); })}>{settings.paused ? <Play size={15}/> : <Pause size={15}/>}</button></div><p>待处理 {remaining.length} 项 · 已有 {drafts.length} 项建议</p><small>关闭侧边栏不会清空进度；浏览器重启后可继续。</small></div>}
         {failed.length > 0 && <div className="warning-card"><AlertCircle size={17}/><div>{failed.length} 项分析失败<p>{failed[0]?.error}</p><button className="text-button" onClick={() => void run('retry', async () => { await rpc({ type: 'RETRY' }); })}>重试失败项</button></div></div>}
         {configured && unclassified.length > 0 && !remaining.length && !drafts.length && !failed.length && <button className="suggestion-banner" disabled={!!busy} onClick={() => void run('analyze', async () => { await rpc({ type: 'ANALYZE' }); setNotice('已开始生成建议，完成后在「待确认」检查'); })}><Sparkles size={17}/><span>为未分类书签生成建议</span><ChevronRight size={16}/></button>}
-        {drafts.length > 0 && <button className="suggestion-banner" onClick={() => setPage('review')}><Sparkles size={17}/><span>{drafts.length} 个分类建议等你确认</span><ChevronRight size={16}/></button>}
-        <div className="section-label"><span>{category || (query ? '搜索结果' : '你的收藏')}<span className="muted-count">{filtered.length}</span></span>{category && <button className="text-button" onClick={() => filterCategory('')}>清除筛选</button>}</div>
-        {filtered.map(b => <BookmarkRow key={b.id} bookmark={b} onOpen={() => void run('open', async () => { await open(b); })} onDetails={() => details(b)}/>)}
+        {groupBookmarksByDate(filtered).map(group => <section className="date-group" key={group.label}><h2>{group.label}</h2><div className="bookmark-list">{group.bookmarks.map(b => <BookmarkRow key={b.id} bookmark={b} onOpen={() => void run('open', async () => { await open(b); })} onDetails={() => details(b)}/>)}</div></section>)}
         {ready && !filtered.length && <div className="empty"><BookmarkIcon size={29}/><h3>{query ? '没有找到匹配的书签' : '这里还没有书签'}</h3><p>{query ? '换个标题、域名或分类试试。' : '打开网页，点击上方「收藏」。'}</p></div>}
       </>}
-      {page === 'categories' && <><div className="section-label">已确认分类<span className="muted-count">{counts.length}</span></div><div className="category-list">{counts.map(([name, count], index) => <button key={name} onClick={() => { filterCategory(name); setPage('home'); }}><span className={`folder-icon tone-${index % 4}`}><Folder size={18}/></span><strong>{name}</strong><span>{count}</span><ChevronRight size={16}/></button>)}</div>{!counts.length && <div className="empty"><Folder size={29}/><h3>还没有已确认的分类</h3><p>AI 建议会先出现在「待确认」，不会直接改变这里。</p></div>}</>}
+      {page === 'categories' && <>
+        <div className="section-heading"><h1>我的分类</h1><button className="text-button" onClick={() => setPage('settings')}>编辑</button></div>
+        <div className="category-list">{counts.map(([name, count]) => <button key={name} onClick={() => { filterCategory(name); setPage('home'); }}><Folder size={26} strokeWidth={1.5}/><strong>{name}</strong><span>{count}</span><ChevronRight size={16}/></button>)}</div>
+        <div className="category-list category-secondary"><button onClick={() => { filterCategory(''); setPage('home'); }}><Folder size={26} strokeWidth={1.5}/><strong>未分类</strong><span>{bookmarks.filter(b => !b.category).length}</span><ChevronRight size={16}/></button><button className="new-category" onClick={() => setShowCategoryCreate(!showCategoryCreate)} aria-expanded={showCategoryCreate}><Plus size={26}/><strong>新建分类</strong></button></div>
+        {showCategoryCreate && <form className="category-create" onSubmit={e => { e.preventDefault(); void createCategory(); }}><label>分类名称<input autoFocus value={newCategory} maxLength={24} onChange={e => setNewCategory(e.target.value)}/></label><div className="button-pair"><button type="button" className="button secondary" onClick={() => setShowCategoryCreate(false)}>取消</button><button className="button" disabled={!!busy || !newCategory.trim()}>创建</button></div></form>}
+        <section className="category-tags"><h2>标签</h2><div className="tag-list">{tags.map(value => <button key={value} onClick={() => { filterTag(value); setPage('home'); }}>{value}</button>)}</div>{!tags.length && <p className="help">确认分类建议后，标签会显示在这里。</p>}</section>
+      </>}
       {page === 'review' && <Review drafts={drafts} bookmarks={bookmarks} categories={settings.categories} busy={!!busy} working={remaining.length} run={run} notify={setNotice}/>}
       {page === 'settings' && <SettingsForm value={settings} busy={!!busy} unclassifiedCount={unclassified.length} onSave={async (value, test) => {
         await run('settings', async () => {
@@ -176,36 +190,16 @@ export function App() {
       {page === 'detail' && selected && <Detail key={selected.id} bookmark={selected} snapshot={snapshot} categories={settings.categories} busy={!!busy} configured={configured} run={run} notify={setNotice} onReader={() => setPage('reader')} onOpen={() => void run('open', () => open(selected))} onDeleted={() => setPage('home')}/>}
       {page === 'reader' && selected && snapshot && <Reader bookmark={selected} snapshot={snapshot}/>}
       {['detail', 'reader'].includes(page) && !selected && <div className="empty">该书签已被删除<button className="text-button" onClick={() => setPage('home')}>返回收藏</button></div>}
-    </main>
-    {page === 'home' && <footer><span className="local-dot"/>数据保存在当前浏览器<span>v0.1.0</span></footer>}
+    </motion.main>
+    {tabPages && <footer>{page === 'home' ? <><span>{bookmarks.length} 个书签</span><button className="icon-button" aria-label="刷新书签" disabled={!!busy} onClick={() => void run('sync', async () => { await rpc({ type: 'SYNC' }); setNotice('书签已刷新'); })}><RefreshCw size={19}/></button></> : page === 'categories' ? <><Folder size={18}/><span>{counts.length} 个分类</span></> : <span>{drafts.length > 1 ? `还有 ${drafts.length - 1} 条建议` : drafts.length ? '1 条建议待确认' : '所有建议已处理'}</span>}</footer>}
   </div>;
 }
 
 function BookmarkRow({ bookmark: b, onOpen, onDetails }: { bookmark: Bookmark; onOpen: () => void; onDetails: () => void }) {
-  return <article className={`bookmark-row ${b.linkState === 'unavailable' ? 'is-unavailable' : ''}`}><button className="bookmark-main" onClick={onOpen} title={b.url}><span className="site-icon">{hostname(b.url).replace(/^www\./, '').slice(0, 1).toUpperCase()}</span><span className="bookmark-copy"><strong>{b.title}</strong><span>{hostname(b.url)}{b.category && <> · <em>{b.category}</em></>}</span>{b.summary && <small>{b.summary}</small>}{b.linkState === 'unavailable' && <small className="danger-text">原网页可能已失效</small>}</span></button><button className="icon-button item-menu" onClick={onDetails} aria-label={`查看 ${b.title} 的详情`}><MoreHorizontal size={18}/></button></article>;
+  return <article className={`bookmark-row ${b.linkState === 'unavailable' ? 'is-unavailable' : ''}`}><button className="bookmark-main" onClick={onOpen} title={b.url}><SiteIcon url={b.url}/><span className="bookmark-copy"><strong>{b.title}</strong><span>{hostname(b.url)}</span>{b.linkState === 'unavailable' && <small className="danger-text">原网页可能已失效</small>}</span></button><span className="row-category">{b.category}</span><button className="icon-button item-menu" onClick={onDetails} aria-label={`查看 ${b.title} 的详情`}><MoreHorizontal size={18}/></button></article>;
 }
 
 type Runner = (label: string, fn: () => Promise<void>) => Promise<boolean>;
-function Review({ drafts, bookmarks, categories, busy, working, run, notify }: { drafts: Suggestion[]; bookmarks: Bookmark[]; categories: string[]; busy: boolean; working: number; run: Runner; notify: (s: string) => void }) {
-  const [filter, setFilter] = useState('');
-  const [uncertain, setUncertain] = useState(false);
-  const groups = new Map<string, number>();
-  drafts.forEach(d => groups.set(d.category, (groups.get(d.category) ?? 0) + 1));
-  const pending = drafts.filter(d => (!filter || d.category === filter) && (!uncertain || d.confidence < 0.65));
-  return <div className="review"><div className="page-heading"><h2>先看建议，再确认</h2><p>{drafts.length} 项建议尚未应用{working > 0 ? `，还有 ${working} 项正在处理` : ''}。Chrome 原有文件夹保持不变。</p></div>
-    <div className="filter-chips"><button className={!filter && !uncertain ? 'active' : ''} onClick={() => { setFilter(''); setUncertain(false); }}>全部 {drafts.length}</button>{[...groups].map(([name, count]) => <button key={name} className={filter === name ? 'active' : ''} onClick={() => { setFilter(name); setUncertain(false); }}>{name} {count}</button>)}<button className={uncertain ? 'active' : ''} onClick={() => { setUncertain(!uncertain); setFilter(''); }}>需检查 {drafts.filter(d => d.confidence < 0.65).length}</button></div>
-    {pending.map(d => {
-      const b = bookmarks.find(b => b.id === d.bookmarkId);
-      if (!b) return null;
-      return <div className="review-row" key={d.bookmarkId}><strong>{b.title}</strong><small>{hostname(b.url)}</small>{d.confidence < 0.65 && <span className="uncertain-label">信息不足，建议检查</span>}<div className="row-between"><span className="subtle">建议分类</span><select aria-label={`${b.title} 的建议分类`} value={d.category} disabled={busy} onChange={e => void run('draft', async () => { await rpc({ type: 'EDIT_DRAFT', id: b.id, category: e.target.value }); })}>{[...new Set([...categories, d.category])].map(c => <option key={c}>{c}</option>)}</select></div>{d.summary && <p>{d.summary}</p>}</div>;
-    })}
-    {!drafts.length && <div className="empty"><Check size={30}/><h3>{working ? '建议正在生成' : '目前没有待确认的建议'}</h3><p>{working ? '每完成一批，结果就会出现在这里。' : '新建议生成后会显示在这里。'}</p></div>}
-    {pending.length > 0 && <div className="sticky-actions"><small>仅应用当前列表中的 {pending.length} 项，其他建议保留。</small><button className="button full" disabled={busy} onClick={() => void run('apply', async () => {
-      const r = await rpc<{ applied: number; skipped: number }>({ type: 'APPLY', ids: pending.map(d => d.bookmarkId) });
-      notify(`已应用 ${r.applied} 项分类${r.skipped ? `，${r.skipped} 项内容已变化或分类失效，未应用` : ''}`);
-    })}><Check size={17}/>确认并应用 {pending.length} 项</button></div>}
-  </div>;
-}
 
 type RestoreCandidate = { fileName: string; input: unknown; preview: BackupPreview };
 function SettingsForm({ value, busy, unclassifiedCount, onSave, notify, onBackup, onRestore }: { value: Settings; busy: boolean; unclassifiedCount: number; onSave: (s: Settings, test: boolean) => Promise<void>; notify: (s: string) => void; onBackup: () => void; onRestore: (input: unknown, permission: Promise<boolean>) => Promise<boolean> }) {
@@ -287,7 +281,7 @@ function Detail({ bookmark: b, snapshot, categories, busy, configured, run, noti
       await rpc({ type: 'CHECK', id: b.id }); notify('检查完成；受限或超时不会被当作失效链接');
     });
   }
-  return <div className="detail"><div className="detail-hero"><span className="large-site-icon">{hostname(b.url).replace(/^www\./, '').slice(0, 1).toUpperCase()}</span><h2>{b.title}</h2><p>{hostname(b.url)}</p></div>
+  return <div className="detail"><div className="detail-hero"><SiteIcon url={b.url} size="large"/><h2>{b.title}</h2><p>{hostname(b.url)}</p></div>
     <label>标题<input value={title} onChange={e => setTitle(e.target.value)}/></label>
     <label>分类<select value={category} onChange={e => setCategory(e.target.value)}>{[...new Set([...categories, ...(b.category ? [b.category] : [])])].map(c => <option key={c}>{c}</option>)}</select></label>
     <button className="button secondary full" disabled={busy || !title.trim()} onClick={() => void run('edit', async () => { await rpc({ type: 'EDIT', id: b.id, title, category }); notify('已保存，手动分类不会被后台任务覆盖'); })}>保存修改</button>
