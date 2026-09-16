@@ -1,4 +1,5 @@
 import React from 'react';
+import { applyTheme } from '../../src/theme';
 import ReactDOM from 'react-dom/client';
 import { App } from '../../src/App';
 import './style.css';
@@ -12,4 +13,5 @@ class ErrorBoundary extends React.Component<{ children: React.ReactNode }, { fai
     return this.props.children;
   }
 }
+applyTheme();
 ReactDOM.createRoot(document.getElementById('root')!).render(<ErrorBoundary><App/></ErrorBoundary>);

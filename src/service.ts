@@ -1,5 +1,5 @@
 import { db } from './db';
-import { applySuggestion, canApply, cleanUrl, classifyStatus, flattenBookmarks, isClaimable, isWebUrl, mergeNative, safeError } from './domain';
+import { applySuggestion, canApply, cleanUrl, classifyStatus, flattenBookmarks, isClaimable, isWebUrl, mergeNative, safeError, taskFailure, analysisTotal, withTimeoutRetries } from './domain';
 import type { Bookmark, Snapshot, Suggestion, Task } from './domain';
 import { getSettings, isConfigured, setSettings } from './settings';
 import { classify } from './llm';
@@ -8,6 +8,7 @@ import type { Message } from './messages';
 const ALARM = 'bookmark-sidekick-work';
 let syncChain: Promise<unknown> = Promise.resolve();
 let working = false;
+let enqueueChain: Promise<unknown> = Promise.resolve();
 
 export async function ensureAlarm() {
   if (!await chrome.alarms.get(ALARM)) await chrome.alarms.create(ALARM, { periodInMinutes: 0.5 });
@@ -43,10 +44,18 @@ export function syncBookmarks(): Promise<string[]> {
   return sync;
 }
 
-export async function enqueue(ids?: string[], mode: Task['mode'] = 'draft') {
+export function enqueue(ids?: string[], mode: Task['mode'] = 'draft'): Promise<void> {
+  const queued = enqueueChain.catch(() => undefined).then(() => enqueueTasks(ids, mode));
+  enqueueChain = queued;
+  return queued;
+}
+
+async function enqueueTasks(ids: string[] | undefined, mode: Task['mode']) {
   const settings = await getSettings();
   if (!isConfigured(settings)) throw new Error('请先配置模型，并允许将书签信息发送给该模型');
-  await db.transaction('rw', db.bookmarks, db.tasks, db.drafts, async () => {
+  const progress = await chrome.storage.local.get('analysisProgress');
+  const total = await db.transaction('rw', db.bookmarks, db.tasks, db.drafts, async () => {
+    const tasksBefore = await db.tasks.count();
     const records = ids ? (await db.bookmarks.bulkGet(ids)).filter((b): b is Bookmark => !!b) : (await db.bookmarks.toArray()).filter(b => !b.category);
     for (const b of records) {
       if (!isWebUrl(b.url)) continue;
@@ -59,7 +68,9 @@ export async function enqueue(ids?: string[], mode: Task['mode'] = 'draft') {
       await db.drafts.delete(b.id);
       await db.tasks.put({ bookmarkId: b.id, revision, mode, status: 'pending', leaseUntil: 0, attempts: 0 });
     }
+    return analysisTotal(progress.analysisProgress?.total ?? 0, tasksBefore, await db.tasks.count());
   });
+  await chrome.storage.local.set({ analysisProgress: { total } });
   await ensureAlarm();
   void pump();
 }
@@ -121,15 +132,22 @@ export async function pump(): Promise<void> {
           }
         });
       } catch (error) {
+        let failed = false;
         await db.transaction('rw', db.tasks, async () => {
           for (const task of batch) {
             const current = await db.tasks.get(task.bookmarkId);
-            if (current?.revision === task.revision) await db.tasks.update(task.bookmarkId, { status: 'failed', leaseUntil: 0, error: safeError(error) });
+            if (current?.revision === task.revision) {
+              const result = taskFailure(error, current.attempts);
+              await db.tasks.update(task.bookmarkId, result);
+              failed ||= result.status === 'failed';
+            }
           }
         });
-        const latest = await getSettings();
-        await setSettings({ ...latest, paused: true });
-        return; // User retries explicitly; do not burn credits in an infinite retry loop.
+        if (failed) {
+          const latest = await getSettings();
+          await setSettings({ ...latest, paused: true });
+          return;
+        }
       }
     }
   } finally {
@@ -206,7 +224,7 @@ export async function handleMessage(message: Message): Promise<unknown> {
     }
     case 'ANALYZE': await syncBookmarks(); await enqueue(message.ids); return true;
     case 'RETRY': {
-      await db.tasks.where('status').equals('failed').modify({ status: 'pending', leaseUntil: 0, error: undefined });
+      await db.tasks.where('status').equals('failed').modify({ status: 'pending', leaseUntil: 0, attempts: 0, error: undefined });
       const settings = await getSettings();
       await setSettings({ ...settings, paused: false });
       void pump(); return true;
@@ -221,7 +239,7 @@ export async function handleMessage(message: Message): Promise<unknown> {
       const settings = await getSettings();
       if (!isConfigured(settings)) throw new Error('请先保存模型设置并允许发送书签信息');
       try {
-        await classify(settings, [{ id: 'connection-test', title: 'Go programming documentation', url: 'https://go.dev/doc/', folder: '', addedAt: 0, revision: 1, category: '', tags: [], summary: '', manual: false, linkState: 'unknown' }]);
+        await withTimeoutRetries(() => classify(settings, [{ id: 'connection-test', title: 'Go programming documentation', url: 'https://go.dev/doc/', folder: '', addedAt: 0, revision: 1, category: '', tags: [], summary: '', manual: false, linkState: 'unknown' }]));
       } catch (e) { throw new Error(safeError(e)); }
       return true;
     }

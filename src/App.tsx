@@ -1,5 +1,8 @@
 import { useEffect, useMemo, useState } from 'react';
 import { AnimatePresence, motion, useReducedMotion } from 'motion/react';
+import { Appearance, useTheme } from './components/Appearance';
+import { CategoryEditor } from './components/CategoryEditor';
+import { CategorySelect } from './components/CategorySelect';
 import { SiteIcon } from './components/SiteIcon';
 import { Review } from './components/Review';
 import { groupBookmarksByDate, filterBookmarks } from './library';
@@ -21,6 +24,7 @@ type Page = 'home' | 'categories' | 'review' | 'detail' | 'reader' | 'settings';
 const stateLabels = { unknown: '尚未确认可访问性', available: '原网页可访问', unavailable: '原网页可能已失效', restricted: '网站限制访问' };
 
 export function App() {
+  useTheme();
   const reducedMotion = useReducedMotion();
   const bookmarks = useLiveQuery(() => db.bookmarks.orderBy('addedAt').reverse().toArray(), [], []);
   const drafts = useLiveQuery(() => db.drafts.toArray(), [], []);
@@ -37,6 +41,7 @@ export function App() {
   const [busy, setBusy] = useState('');
   const [notice, setNotice] = useState('');
   const [ready, setReady] = useState(false);
+  const [analysisTotal, setAnalysisTotal] = useState(0);
   const selected = bookmarks.find(b => b.id === selectedId);
   const snapshot = useLiveQuery(() => selectedId ? db.snapshots.get(selectedId) : undefined, [selectedId]);
   const configured = isConfigured(settings);
@@ -47,7 +52,10 @@ export function App() {
     ? bookmarks.find(b => isWebUrl(b.url) && cleanUrl(b.url) === cleanUrl(currentTab.url!)) : undefined;
 
   useEffect(() => {
-    const load = () => { void getSettings().then(updateSettings); };
+    const load = (changes?: Record<string, chrome.storage.StorageChange>) => {
+      if (!changes || changes.settings) void getSettings().then(updateSettings);
+      if (!changes || changes.analysisProgress) void chrome.storage.local.get('analysisProgress').then(result => setAnalysisTotal(result.analysisProgress?.total ?? 0));
+    };
     const tab = () => { void chrome.tabs.query({ active: true, currentWindow: true }).then(([value]) => setCurrentTab(value)); };
     const changed = (_id: number, info: chrome.tabs.TabChangeInfo) => { if (info.url || info.title || info.status === 'complete') tab(); };
     load(); tab();
@@ -148,11 +156,19 @@ export function App() {
     </>}
 
     <motion.main key={page} className="page-stage" initial={{ opacity: 0, y: reducedMotion ? 0 : 6 }} animate={{ opacity: 1, y: 0 }} transition={{ duration: 0.18, ease: 'easeOut' }}>
+      {configured && tasks.length > 0 && <div className="job-card" role="status">
+        <div className="row-between"><span><span className={settings.paused ? '' : 'pulse-dot'}/>{settings.paused ? '分析已暂停' : '正在生成分类建议'}</span><button className="icon-button" aria-label={settings.paused ? '继续分析' : '暂停分析'} disabled={!!busy} onClick={() => void run('pause', async () => { await rpc({ type: 'PAUSE', paused: !settings.paused }); })}>{settings.paused ? <Play size={15}/> : <Pause size={15}/>}</button></div>
+        <progress className="analysis-progress" aria-label="书签分析进度" max={Math.max(analysisTotal, tasks.length)} value={Math.max(0, analysisTotal - tasks.length)}/>
+        <p>已完成 {Math.max(0, analysisTotal - tasks.length)} / {Math.max(analysisTotal, tasks.length)} 项{failed.length ? ` · 失败 ${failed.length} 项` : ''}</p>
+        {!settings.paused && tasks.some(t => t.status === 'running' && t.attempts > 1) && <p>响应超时，正在进行第 {Math.max(...tasks.filter(t => t.status === 'running').map(t => t.attempts)) - 1} / 3 次重试</p>}
+        <small>每完成一批更新进度；关闭侧边栏后仍可继续。</small>
+      </div>}
+      {failed.length > 0 && <div className="warning-card"><AlertCircle size={17}/><div>{failed.length} 项分析失败<p>{failed[0]?.error}</p><button className="text-button" onClick={() => void run('retry', async () => { await rpc({ type: 'RETRY' }); })}>重试失败项</button></div></div>}
       {page === 'home' && <>
         <div className="section-heading"><h1>{query ? '搜索结果' : tag ? `标签 · ${tag}` : category !== null ? category || '未分类' : '最近收藏'}</h1><button className="text-button" onClick={() => nav('home')}>全部</button></div>
         {!ready && <div className="empty" role="status">正在读取 Chrome 书签…</div>}
-        {configured && remaining.length > 0 && <div className="job-card"><div className="row-between"><span><span className={settings.paused ? '' : 'pulse-dot'}/>{settings.paused ? '分析已暂停' : '正在生成分类建议'}</span><button className="icon-button" aria-label={settings.paused ? '继续分析' : '暂停分析'} onClick={() => void run('pause', async () => { await rpc({ type: 'PAUSE', paused: !settings.paused }); })}>{settings.paused ? <Play size={15}/> : <Pause size={15}/>}</button></div><p>待处理 {remaining.length} 项 · 已有 {drafts.length} 项建议</p><small>关闭侧边栏不会清空进度；浏览器重启后可继续。</small></div>}
-        {failed.length > 0 && <div className="warning-card"><AlertCircle size={17}/><div>{failed.length} 项分析失败<p>{failed[0]?.error}</p><button className="text-button" onClick={() => void run('retry', async () => { await rpc({ type: 'RETRY' }); })}>重试失败项</button></div></div>}
+
+
         {configured && unclassified.length > 0 && !remaining.length && !drafts.length && !failed.length && <button className="suggestion-banner" disabled={!!busy} onClick={() => void run('analyze', async () => { await rpc({ type: 'ANALYZE' }); setNotice('已开始生成建议，完成后在「待确认」检查'); })}><Sparkles size={17}/><span>为未分类书签生成建议</span><ChevronRight size={16}/></button>}
         {groupBookmarksByDate(filtered).map(group => <section className="date-group" key={group.label}><h2>{group.label}</h2><div className="bookmark-list">{group.bookmarks.map(b => <BookmarkRow key={b.id} bookmark={b} onOpen={() => void run('open', async () => { await open(b); })} onDetails={() => details(b)}/>)}</div></section>)}
         {ready && !filtered.length && <div className="empty"><BookmarkIcon size={29}/><h3>{query ? '没有找到匹配的书签' : '这里还没有书签'}</h3><p>{query ? '换个标题、域名或分类试试。' : '打开网页，点击上方「收藏」。'}</p></div>}
@@ -204,18 +220,16 @@ type Runner = (label: string, fn: () => Promise<void>) => Promise<boolean>;
 type RestoreCandidate = { fileName: string; input: unknown; preview: BackupPreview };
 function SettingsForm({ value, busy, unclassifiedCount, onSave, notify, onBackup, onRestore }: { value: Settings; busy: boolean; unclassifiedCount: number; onSave: (s: Settings, test: boolean) => Promise<void>; notify: (s: string) => void; onBackup: () => void; onRestore: (input: unknown, permission: Promise<boolean>) => Promise<boolean> }) {
   const [form, setForm] = useState(value);
-  const [categoryText, setCategoryText] = useState(value.categories.join('，'));
   const [saving, setSaving] = useState(false);
   const [restoreCandidate, setRestoreCandidate] = useState<RestoreCandidate>();
 
   useEffect(() => {
     setForm(value);
-    setCategoryText(value.categories.join('，'));
   }, [value]);
 
   async function submit(test: boolean) {
     if (saving || busy) return;
-    const parsed = settingsSchema.safeParse({ ...form, baseUrl: form.baseUrl.trim().replace(/\/+$/, ''), categories: categoryText.split(/[,，\n]/).map(s => s.trim()).filter(Boolean) });
+    const parsed = settingsSchema.safeParse({ ...form, baseUrl: form.baseUrl.trim().replace(/\/+$/, '') });
     if (!parsed.success) { notify(parsed.error.issues[0]?.message || '请检查设置'); return; }
     if (parsed.data.consent && (!parsed.data.baseUrl || !parsed.data.model)) { notify('请填写 API 地址和模型名称'); return; }
     if (test && !parsed.data.consent) { notify('请先勾选发送书签信息的授权'); return; }
@@ -248,12 +262,13 @@ function SettingsForm({ value, busy, unclassifiedCount, onSave, notify, onBackup
     if (await onRestore(candidate.input, permission)) setRestoreCandidate(undefined);
   }
 
-  return <div className="settings-form"><div className="page-heading"><h2>模型与数据</h2><p>使用你自己的 OpenAI-compatible 接口。不需要账号或服务器。</p></div>
+  return <div className="settings-form"><Appearance/><div className="divider"/><div className="page-heading"><h2>模型与数据</h2><p>使用你自己的 OpenAI-compatible 接口。不需要账号或服务器。</p></div>
     <label>API 地址<input type="url" placeholder="https://你的接口地址/v1" value={form.baseUrl} autoComplete="off" onChange={e => setForm({ ...form, baseUrl: e.target.value })}/><small>填写接口基础地址，通常以 /v1 结尾，不要包含 /chat/completions。</small></label>
     <label>API Key<input type="password" placeholder="本地模型可留空" value={form.apiKey} autoComplete="off" spellCheck={false} onChange={e => setForm({ ...form, apiKey: e.target.value })}/><small>保存在当前浏览器；导出完整备份时会以明文写入 JSON 文件。</small></label>
     <label>模型名称<input placeholder="填写接口提供的准确模型 ID" value={form.model} autoComplete="off" onChange={e => setForm({ ...form, model: e.target.value })}/></label>
-    <label>分类<textarea rows={3} value={categoryText} onChange={e => setCategoryText(e.target.value)} /><small>用逗号分隔。模型只能从这些分类中选择；不会改名或合并已有分类。</small></label>
+    <CategoryEditor categories={form.categories} onChange={categories => setForm({ ...form, categories })}/>
     <label className="consent"><input type="checkbox" checked={form.consent} onChange={e => setForm({ ...form, consent: e.target.checked })}/><span>允许向以上模型发送书签标题、网址、原文件夹，以及已保存的正文，用于分类和摘要。</span></label>
+    {(saving || busy) && <div role="status"><progress className="analysis-progress" aria-label="正在保存设置或测试模型"/><p className="help">正在处理；模型响应超时后会自动重试，最多 3 次。</p></div>}
     <div className="button-pair"><button className="button secondary" disabled={saving || busy} onClick={() => void submit(true)}>测试连接</button><button className="button" disabled={saving || busy} onClick={() => void submit(false)}>{saving || busy ? '处理中…' : unclassifiedCount && form.consent ? '保存并分析' : '保存设置'}</button></div>
     <div className="divider"/><h3>完整备份</h3><p className="help">包含模型地址、API Key、自定义分类、书签分类/标签/摘要和阅读快照。恢复只匹配现有 Chrome 书签，不会新增、删除或移动原生书签。</p>
     <div className="button-pair"><button className="button secondary" onClick={onBackup} disabled={busy}>导出备份</button><label className="button secondary file-button">选择备份文件<input type="file" accept=".json,application/json" disabled={busy} onChange={e => { const file = e.target.files?.[0]; if (file) void chooseBackup(file); e.target.value = ''; }}/></label></div>
@@ -283,7 +298,7 @@ function Detail({ bookmark: b, snapshot, categories, busy, configured, run, noti
   }
   return <div className="detail"><div className="detail-hero"><SiteIcon url={b.url} size="large"/><h2>{b.title}</h2><p>{hostname(b.url)}</p></div>
     <label>标题<input value={title} onChange={e => setTitle(e.target.value)}/></label>
-    <label>分类<select value={category} onChange={e => setCategory(e.target.value)}>{[...new Set([...categories, ...(b.category ? [b.category] : [])])].map(c => <option key={c}>{c}</option>)}</select></label>
+    <div className="detail-category"><span>分类</span><CategorySelect label="分类" value={category} onChange={setCategory} categories={[...new Set([...categories, ...(b.category ? [b.category] : [])])]} disabled={busy}/></div>
     <button className="button secondary full" disabled={busy || !title.trim()} onClick={() => void run('edit', async () => { await rpc({ type: 'EDIT', id: b.id, title, category }); notify('已保存，手动分类不会被后台任务覆盖'); })}>保存修改</button>
     {!!b.tags.length && <section><h3>标签</h3><div className="tag-list">{b.tags.map(t => <span key={t}>{t}</span>)}</div></section>}
     {b.summary && <section><h3>一句摘要</h3><p>{b.summary}</p></section>}

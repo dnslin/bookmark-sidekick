@@ -123,3 +123,23 @@ export function safeError(error: unknown): string {
   // Do not render raw SDK errors: they can include request headers or page data.
   return '模型请求或输出校验失败。请检查接口地址、模型名称及网络，然后重试';
 }
+
+/** attempts includes the initial request; three retries allow four requests total. */
+export function taskFailure(error: unknown, attempts: number): Pick<Task, 'status' | 'leaseUntil' | 'error'> {
+  const timeout = (error as { name?: string } | undefined)?.name === 'TimeoutError';
+  if (timeout && attempts < 4) return { status: 'pending', leaseUntil: 0, error: `模型响应超时，正在进行第 ${attempts}/3 次重试` };
+  return { status: 'failed', leaseUntil: 0, error: timeout ? '模型响应超时，已自动重试 3 次，请检查模型后重试' : safeError(error) };
+}
+
+export function analysisTotal(previousTotal: number, tasksBefore: number, tasksAfter: number): number {
+  return tasksBefore === 0 ? tasksAfter : Math.max(previousTotal, tasksBefore) + tasksAfter - tasksBefore;
+}
+
+export async function withTimeoutRetries<T>(request: () => Promise<T>): Promise<T> {
+  for (let attempts = 1; ; attempts++) {
+    try { return await request(); }
+    catch (error) {
+      if (taskFailure(error, attempts).status === 'failed') throw error;
+    }
+  }
+}

@@ -4,6 +4,7 @@ import { db } from '../db';
 import { hostname, type Bookmark, type Suggestion } from '../domain';
 import { rpc } from '../messages';
 import { SiteIcon } from './SiteIcon';
+import { CategorySelect } from './CategorySelect';
 
 type ReviewProps = {
   drafts: Suggestion[];
@@ -37,10 +38,9 @@ export function Review({ drafts, bookmarks, categories, busy, working, run, noti
         <div className="review-bookmark"><SiteIcon url={current.bookmark.url} size="large"/><div><strong>{current.bookmark.title}</strong><small>{hostname(current.bookmark.url)}</small></div></div>
         <div className="review-fields">
           {current.draft.confidence < 0.65 && <span className="uncertain-label">信息不足，建议检查</span>}
-          <label><span>建议分类</span><div className="review-category"><Folder size={26} strokeWidth={1.5}/><select aria-label={`${current.bookmark.title} 的建议分类`} value={current.draft.category} disabled={busy} onChange={event => {
-            const category = event.target.value;
+          <div><span>建议分类</span><div className="review-category"><Folder size={26} strokeWidth={1.5}/><CategorySelect label={`${current.bookmark.title} 的建议分类`} value={current.draft.category} categories={categories} disabled={busy} onChange={category => {
             void run('draft', async () => { await rpc({ type: 'EDIT_DRAFT', id: current.bookmark.id, category }); });
-          }}>{[...new Set([...categories, current.draft.category])].map(category => <option key={category}>{category}</option>)}</select><ChevronRight size={16}/></div></label>
+          }}/></div></div>
           {!!current.draft.tags.length && <section><h2>建议标签</h2><div className="tag-list">{current.draft.tags.map(tag => <span key={tag}>{tag}</span>)}</div></section>}
           {current.draft.summary && <section><h2>摘要</h2><p>{current.draft.summary}</p></section>}
         </div>
