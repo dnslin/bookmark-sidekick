@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useMemo, useState } from 'react';
 import { Check, ChevronRight, Folder } from 'lucide-react';
 import { db } from '../db';
 import { hostname, type Bookmark, type Suggestion } from '../domain';
@@ -18,10 +18,11 @@ type ReviewProps = {
 
 export function Review({ drafts, bookmarks, categories, busy, working, run, notify }: ReviewProps) {
   const [selectedId, setSelectedId] = useState('');
-  const pending = drafts.flatMap(draft => {
-    const bookmark = bookmarks.find(item => item.id === draft.bookmarkId);
+  const byId = useMemo(() => new Map(bookmarks.map(bookmark => [bookmark.id, bookmark])), [bookmarks]);
+  const pending = useMemo(() => drafts.flatMap(draft => {
+    const bookmark = byId.get(draft.bookmarkId);
     return bookmark ? [{ draft, bookmark }] : [];
-  });
+  }), [drafts, byId]);
   const current = pending.find(item => item.draft.bookmarkId === selectedId) ?? pending[0];
 
   async function apply(ids: string[]) {
