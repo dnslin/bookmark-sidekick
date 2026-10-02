@@ -1,27 +1,25 @@
-import { useEffect, useMemo, useState } from 'react';
+import { lazy, Suspense, useEffect, useMemo, useState } from 'react';
 import { AnimatePresence, motion, useReducedMotion } from 'motion/react';
-import { Appearance, useTheme } from './components/Appearance';
-import { CategoryEditor } from './components/CategoryEditor';
-import { CategorySelect } from './components/CategorySelect';
+import { useTheme } from './components/Appearance';
+import { Detail } from './components/Detail';
 import { SiteIcon } from './components/SiteIcon';
 import { Review } from './components/Review';
 import { groupBookmarksByDate, filterBookmarks } from './library';
 import { Navigation, type LibraryPage } from './components/Navigation';
 import { useLiveQuery } from 'dexie-react-hooks';
-import Fuse from 'fuse.js';
-import DOMPurify from 'dompurify';
-import { ArrowLeft, Bookmark as BookmarkIcon, BookmarkPlus, Check, ChevronRight, ExternalLink, FileText, Folder, MoreHorizontal, Pause, Play, Plus, RefreshCw, Search, Settings as SettingsIcon, Sparkles, Trash2, X, AlertCircle } from 'lucide-react';
+import { createBookmarkSearch } from './search';
+import { ArrowLeft, Bookmark as BookmarkIcon, BookmarkPlus, Check, ChevronRight, Folder, MoreHorizontal, Pause, Play, Plus, RefreshCw, Search, Settings as SettingsIcon, Sparkles, X, AlertCircle } from 'lucide-react';
 import { db } from './db';
 import { cleanUrl, hostname, isWebUrl } from './domain';
 import type { Bookmark, Snapshot } from './domain';
 import { defaultSettings, getSettings, isConfigured, originPattern, setSettings, settingsSchema } from './settings';
 import type { Settings } from './settings';
 import { rpc } from './messages';
-import { exportBackup, importBackup, inspectBackup } from './backup';
-import type { BackupPreview } from './backup';
+
+const SettingsForm = lazy(() => import('./components/SettingsForm'));
+const Reader = lazy(() => import('./components/Reader'));
 
 type Page = 'home' | 'categories' | 'review' | 'detail' | 'reader' | 'settings';
-const stateLabels = { unknown: '尚未确认可访问性', available: '原网页可访问', unavailable: '原网页可能已失效', restricted: '网站限制访问' };
 
 export function App() {
   useTheme();
@@ -115,12 +113,9 @@ export function App() {
       setNotice(warning || (result.existed ? '书签已存在，阅读快照已更新' : configured ? '已收藏，正在自动分类' : '已收藏，可稍后配置 AI 分类'));
     });
   }
-  const filtered = useMemo(() => {
-    const scoped = filterBookmarks(bookmarks, category, tag);
-    if (!query.trim()) return scoped;
-    return new Fuse(scoped, { keys: [{ name: 'title', weight: 3 }, 'url', 'category', 'tags', 'summary'], threshold: 0.36, ignoreLocation: true })
-      .search(query.trim()).map(r => r.item);
-  }, [bookmarks, query, category, tag]);
+  const scoped = useMemo(() => filterBookmarks(bookmarks, category, tag), [bookmarks, category, tag]);
+  const searchBookmarks = useMemo(() => createBookmarkSearch(scoped), [scoped]);
+  const filtered = useMemo(() => searchBookmarks(query), [searchBookmarks, query]);
   const counts = useMemo(() => {
     const map = new Map<string, number>();
     for (const b of bookmarks) if (b.category) map.set(b.category, (map.get(b.category) ?? 0) + 1);
@@ -181,15 +176,16 @@ export function App() {
         <section className="category-tags"><h2>标签</h2><div className="tag-list">{tags.map(value => <button key={value} onClick={() => { filterTag(value); setPage('home'); }}>{value}</button>)}</div>{!tags.length && <p className="help">确认分类建议后，标签会显示在这里。</p>}</section>
       </>}
       {page === 'review' && <Review drafts={drafts} bookmarks={bookmarks} categories={settings.categories} busy={!!busy} working={remaining.length} run={run} notify={setNotice}/>}
-      {page === 'settings' && <SettingsForm value={settings} busy={!!busy} unclassifiedCount={unclassified.length} onSave={async (value, test) => {
-        await run('settings', async () => {
+      {page === 'settings' && <Suspense fallback={<div className="empty" role="status">正在加载设置…</div>}><SettingsForm value={settings} busy={!!busy} unclassifiedCount={unclassified.length} onSave={async (value, test) => {
+        return run('settings', async () => {
           await setSettings(value); updateSettings(value);
           if (test) { await rpc({ type: 'TEST_MODEL' }); setNotice('模型连接正常，输出校验通过'); }
           else if (isConfigured(value) && unclassified.length) {
-            await rpc({ type: 'ANALYZE' }); setPage('home'); setNotice('已保存设置，开始生成未分类书签的建议');
-          } else { setNotice('设置已保存'); setPage('home'); }
+            await rpc({ type: 'ANALYZE' }); setNotice('已保存设置，开始生成未分类书签的建议');
+          } else { setNotice('设置已保存'); }
         });
-      }} notify={setNotice} onBackup={() => void run('backup', async () => {
+      }} onSaved={() => setPage('home')} notify={setNotice} onBackup={() => void run('backup', async () => {
+        const { exportBackup } = await import('./backup');
         const blob = new Blob([JSON.stringify(await exportBackup(), null, 2)], { type: 'application/json' });
         const url = URL.createObjectURL(blob);
         const a = document.createElement('a'); a.href = url; a.download = `bookmark-sidekick-${new Date().toISOString().slice(0, 10)}.json`; a.click();
@@ -197,14 +193,15 @@ export function App() {
       })} onRestore={(input, permission) => run('restore', async () => {
         if (!await permission) throw new Error('未授权模型接口，未执行恢复');
         await rpc({ type: 'SYNC' });
+        const { importBackup } = await import('./backup');
         const result = await importBackup(input);
         updateSettings(result.settings);
         setNotice(result.settingsRestored
           ? `已恢复 ${result.restored} 项，跳过 ${result.skipped} 项；模型配置和 ${result.categoryCount} 个分类已恢复`
           : `已恢复 ${result.restored} 项，跳过 ${result.skipped} 项；旧版备份已补回 ${result.categoryCount} 个分类`);
-      })}/>}
+      })}/></Suspense>}
       {page === 'detail' && selected && <Detail key={selected.id} bookmark={selected} snapshot={snapshot} categories={settings.categories} busy={!!busy} configured={configured} run={run} notify={setNotice} onReader={() => setPage('reader')} onOpen={() => void run('open', () => open(selected))} onDeleted={() => setPage('home')}/>}
-      {page === 'reader' && selected && snapshot && <Reader bookmark={selected} snapshot={snapshot}/>}
+      {page === 'reader' && selected && snapshot && <Suspense fallback={<div className="empty" role="status">正在加载正文…</div>}><Reader bookmark={selected} snapshot={snapshot}/></Suspense>}
       {['detail', 'reader'].includes(page) && !selected && <div className="empty">该书签已被删除<button className="text-button" onClick={() => setPage('home')}>返回收藏</button></div>}
     </motion.main>
     {tabPages && <footer>{page === 'home' ? <><span>{bookmarks.length} 个书签</span><button className="icon-button" aria-label="刷新书签" disabled={!!busy} onClick={() => void run('sync', async () => { await rpc({ type: 'SYNC' }); setNotice('书签已刷新'); })}><RefreshCw size={19}/></button></> : page === 'categories' ? <><Folder size={18}/><span>{counts.length} 个分类</span></> : <span>{drafts.length > 1 ? `还有 ${drafts.length - 1} 条建议` : drafts.length ? '1 条建议待确认' : '所有建议已处理'}</span>}</footer>}
@@ -213,111 +210,4 @@ export function App() {
 
 function BookmarkRow({ bookmark: b, onOpen, onDetails }: { bookmark: Bookmark; onOpen: () => void; onDetails: () => void }) {
   return <article className={`bookmark-row ${b.linkState === 'unavailable' ? 'is-unavailable' : ''}`}><button className="bookmark-main" onClick={onOpen} title={b.url}><SiteIcon url={b.url}/><span className="bookmark-copy"><strong>{b.title}</strong><span>{hostname(b.url)}</span>{b.linkState === 'unavailable' && <small className="danger-text">原网页可能已失效</small>}</span></button><span className="row-category">{b.category}</span><button className="icon-button item-menu" onClick={onDetails} aria-label={`查看 ${b.title} 的详情`}><MoreHorizontal size={18}/></button></article>;
-}
-
-type Runner = (label: string, fn: () => Promise<void>) => Promise<boolean>;
-
-type RestoreCandidate = { fileName: string; input: unknown; preview: BackupPreview };
-function SettingsForm({ value, busy, unclassifiedCount, onSave, notify, onBackup, onRestore }: { value: Settings; busy: boolean; unclassifiedCount: number; onSave: (s: Settings, test: boolean) => Promise<void>; notify: (s: string) => void; onBackup: () => void; onRestore: (input: unknown, permission: Promise<boolean>) => Promise<boolean> }) {
-  const [form, setForm] = useState(value);
-  const [saving, setSaving] = useState(false);
-  const [restoreCandidate, setRestoreCandidate] = useState<RestoreCandidate>();
-
-  useEffect(() => {
-    setForm(value);
-  }, [value]);
-
-  async function submit(test: boolean) {
-    if (saving || busy) return;
-    const parsed = settingsSchema.safeParse({ ...form, baseUrl: form.baseUrl.trim().replace(/\/+$/, '') });
-    if (!parsed.success) { notify(parsed.error.issues[0]?.message || '请检查设置'); return; }
-    if (parsed.data.consent && (!parsed.data.baseUrl || !parsed.data.model)) { notify('请填写 API 地址和模型名称'); return; }
-    if (test && !parsed.data.consent) { notify('请先勾选发送书签信息的授权'); return; }
-    setSaving(true);
-    try {
-      if (parsed.data.consent && !await chrome.permissions.request({ origins: [originPattern(parsed.data.baseUrl)] })) { notify('未获得模型接口的访问权限，设置未保存'); return; }
-      await onSave({ ...parsed.data, paused: false }, test);
-    } catch { notify('保存失败，请检查模型地址和访问权限'); }
-    finally { setSaving(false); }
-  }
-
-  async function chooseBackup(file: File) {
-    if (file.size > 100 * 1024 * 1024) { notify('MVP 暂支持 100 MB 以内的备份文件'); return; }
-    try {
-      const input = JSON.parse(await file.text()) as unknown;
-      setRestoreCandidate({ fileName: file.name, input, preview: inspectBackup(input) });
-    } catch {
-      setRestoreCandidate(undefined);
-      notify('备份文件无法读取或格式不正确');
-    }
-  }
-
-  async function confirmRestore() {
-    const candidate = restoreCandidate;
-    if (!candidate || busy) return;
-    const model = candidate.preview.model;
-    const permission = model?.consent && model.baseUrl
-      ? chrome.permissions.request({ origins: [originPattern(model.baseUrl)] })
-      : Promise.resolve(true);
-    if (await onRestore(candidate.input, permission)) setRestoreCandidate(undefined);
-  }
-
-  return <div className="settings-form"><Appearance/><div className="divider"/><div className="page-heading"><h2>模型与数据</h2><p>使用你自己的 OpenAI-compatible 接口。不需要账号或服务器。</p></div>
-    <label>API 地址<input type="url" placeholder="https://你的接口地址/v1" value={form.baseUrl} autoComplete="off" onChange={e => setForm({ ...form, baseUrl: e.target.value })}/><small>填写接口基础地址，通常以 /v1 结尾，不要包含 /chat/completions。</small></label>
-    <label>API Key<input type="password" placeholder="本地模型可留空" value={form.apiKey} autoComplete="off" spellCheck={false} onChange={e => setForm({ ...form, apiKey: e.target.value })}/><small>保存在当前浏览器；导出完整备份时会以明文写入 JSON 文件。</small></label>
-    <label>模型名称<input placeholder="填写接口提供的准确模型 ID" value={form.model} autoComplete="off" onChange={e => setForm({ ...form, model: e.target.value })}/></label>
-    <CategoryEditor categories={form.categories} onChange={categories => setForm({ ...form, categories })}/>
-    <label className="consent"><input type="checkbox" checked={form.consent} onChange={e => setForm({ ...form, consent: e.target.checked })}/><span>允许向以上模型发送书签标题、网址、原文件夹，以及已保存的正文，用于分类和摘要。</span></label>
-    {(saving || busy) && <div role="status"><progress className="analysis-progress" aria-label="正在保存设置或测试模型"/><p className="help">正在处理；模型响应超时后会自动重试，最多 3 次。</p></div>}
-    <div className="button-pair"><button className="button secondary" disabled={saving || busy} onClick={() => void submit(true)}>测试连接</button><button className="button" disabled={saving || busy} onClick={() => void submit(false)}>{saving || busy ? '处理中…' : unclassifiedCount && form.consent ? '保存并分析' : '保存设置'}</button></div>
-    <div className="divider"/><h3>完整备份</h3><p className="help">包含模型地址、API Key、自定义分类、书签分类/标签/摘要和阅读快照。恢复只匹配现有 Chrome 书签，不会新增、删除或移动原生书签。</p>
-    <div className="button-pair"><button className="button secondary" onClick={onBackup} disabled={busy}>导出备份</button><label className="button secondary file-button">选择备份文件<input type="file" accept=".json,application/json" disabled={busy} onChange={e => { const file = e.target.files?.[0]; if (file) void chooseBackup(file); e.target.value = ''; }}/></label></div>
-    {restoreCandidate && <section className="restore-preview" aria-label="恢复预览">
-      <div className="restore-preview-head"><div><strong>{restoreCandidate.fileName}</strong><span>{restoreCandidate.preview.exportedAt ? new Date(restoreCandidate.preview.exportedAt).toLocaleString('zh-CN') : `备份格式 v${restoreCandidate.preview.version}`}</span></div><button className="icon-button" aria-label="取消选择备份" onClick={() => setRestoreCandidate(undefined)}><X size={15}/></button></div>
-      <div className="restore-preview-stats"><span><strong>{restoreCandidate.preview.entryCount}</strong>书签</span><span><strong>{restoreCandidate.preview.snapshotCount}</strong>快照</span><span><strong>{restoreCandidate.preview.categories.length}</strong>分类</span></div>
-      {restoreCandidate.preview.model
-        ? <p>模型：{restoreCandidate.preview.model.model || '未配置'} · {restoreCandidate.preview.model.hasApiKey ? '包含 API Key' : 'API Key 为空'}</p>
-        : <p>旧版备份不含模型配置；将保留当前模型配置，并从书签数据补回分类。</p>}
-      <p className="restore-warning">{restoreCandidate.preview.model ? '确认后将覆盖当前模型配置、自定义分类，以及匹配书签的分类与快照。' : '确认后将覆盖匹配书签的分类与快照；当前模型配置不会改变。'}</p>
-      <div className="button-pair"><button className="button secondary" disabled={busy} onClick={() => setRestoreCandidate(undefined)}>取消</button><button className="button" disabled={busy} onClick={() => void confirmRestore()}>{busy ? '恢复中…' : '确认恢复'}</button></div>
-    </section>}
-    <p className="privacy-note"><AlertCircle size={15}/>备份文件包含明文 API Key，请只保存在可信位置。扩展卸载后，本地分类和快照仍会被清除。</p>
-  </div>;
-}
-
-function Detail({ bookmark: b, snapshot, categories, busy, configured, run, notify, onReader, onOpen, onDeleted }: { bookmark: Bookmark; snapshot?: Snapshot; categories: string[]; busy: boolean; configured: boolean; run: Runner; notify: (s: string) => void; onReader: () => void; onOpen: () => void; onDeleted: () => void }) {
-  const [title, setTitle] = useState(b.title);
-  const [category, setCategory] = useState(b.category || categories[0] || '其他');
-  async function check() {
-    if (!isWebUrl(b.url)) { notify('只能检查普通网页'); return; }
-    const permission = chrome.permissions.request({ origins: [originPattern(b.url)] });
-    await run('check', async () => {
-      if (!await permission) throw new Error('未授权检查该网站');
-      await rpc({ type: 'CHECK', id: b.id }); notify('检查完成；受限或超时不会被当作失效链接');
-    });
-  }
-  return <div className="detail"><div className="detail-hero"><SiteIcon url={b.url} size="large"/><h2>{b.title}</h2><p>{hostname(b.url)}</p></div>
-    <label>标题<input value={title} onChange={e => setTitle(e.target.value)}/></label>
-    <div className="detail-category"><span>分类</span><CategorySelect label="分类" value={category} onChange={setCategory} categories={[...new Set([...categories, ...(b.category ? [b.category] : [])])]} disabled={busy}/></div>
-    <button className="button secondary full" disabled={busy || !title.trim()} onClick={() => void run('edit', async () => { await rpc({ type: 'EDIT', id: b.id, title, category }); notify('已保存，手动分类不会被后台任务覆盖'); })}>保存修改</button>
-    {!!b.tags.length && <section><h3>标签</h3><div className="tag-list">{b.tags.map(t => <span key={t}>{t}</span>)}</div></section>}
-    {b.summary && <section><h3>一句摘要</h3><p>{b.summary}</p></section>}
-    <section><div className="row-between"><h3>网页与快照</h3><button className="text-button" disabled={busy} onClick={() => void check()}>{busy ? '处理中' : '检查链接'}</button></div><p className={b.linkState === 'unavailable' ? 'danger-text' : ''}>{stateLabels[b.linkState]}</p>{b.checkDetail && <small>{b.checkDetail}</small>}<p className="snapshot-line"><FileText size={14}/>{snapshot ? `已保存正文 · ${new Date(snapshot.capturedAt).toLocaleDateString('zh-CN')}` : '尚未保存正文快照'}</p><div className="button-pair"><button className="button secondary" onClick={onOpen}><ExternalLink size={15}/>打开网页</button><button className="button" disabled={!snapshot} onClick={onReader}><FileText size={15}/>阅读快照</button></div></section>
-    <div className="divider"/><button className="action-row" disabled={busy || !configured} onClick={() => void run('reanalyze', async () => { await rpc({ type: 'ANALYZE', ids: [b.id] }); notify('已重新分析，新结果仍需在「待确认」应用'); })}><RefreshCw size={17}/>重新生成分类建议<ChevronRight size={15}/></button><button className="action-row danger-text" disabled={busy} onClick={() => {
-      if (!window.confirm(`删除「${b.title}」？这会同时删除 Chrome 原生书签及其本地快照。`)) return;
-      void run('delete', async () => { await rpc({ type: 'DELETE', id: b.id }); onDeleted(); notify('已删除书签'); });
-    }}><Trash2 size={17}/>删除书签<ChevronRight size={15}/></button>
-    <small className="original-folder">原文件夹：{b.folder || '根目录'}</small>
-  </div>;
-}
-
-function Reader({ bookmark, snapshot }: { bookmark: Bookmark; snapshot: Snapshot }) {
-  const safeHtml = useMemo(() => DOMPurify.sanitize(snapshot.html, {
-    ALLOWED_TAGS: ['p', 'h1', 'h2', 'h3', 'h4', 'ul', 'ol', 'li', 'blockquote', 'pre', 'code', 'strong', 'b', 'em', 'i', 'br', 'hr', 'table', 'thead', 'tbody', 'tr', 'td', 'th', 'a'],
-    ALLOWED_ATTR: ['href'],
-  }), [snapshot.html]);
-  return <article className="reader"><div className="reader-banner"><FileText size={15}/>这是保存的正文，不是实时网页</div><h1>{bookmark.title}</h1><div className="reader-meta">{hostname(snapshot.url)} · {new Date(snapshot.capturedAt).toLocaleString('zh-CN')}</div><div className="reader-content" dangerouslySetInnerHTML={{ __html: safeHtml }} onClick={e => {
-    const anchor = (e.target as HTMLElement).closest('a');
-    if (anchor) { e.preventDefault(); if (isWebUrl(anchor.href)) void chrome.tabs.create({ url: anchor.href }); }
-  }}/></article>;
 }

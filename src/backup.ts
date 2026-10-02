@@ -3,6 +3,7 @@ import { getSettings, setSettings, settingsSchema } from './settings';
 import type { Settings } from './settings';
 import { categoriesFromEntries, parseBackup } from './backup-format';
 import type { ParsedBackup } from './backup-format';
+import type { Bookmark } from './domain';
 
 export { inspectBackup } from './backup-format';
 export type { BackupPreview } from './backup-format';
@@ -47,20 +48,54 @@ async function settingsForRestore(backup: ParsedBackup): Promise<Settings> {
   return settingsSchema.parse({ ...current, categories });
 }
 
+type BackupEntry = ParsedBackup['entries'][number];
+type BookmarkIdentity = Pick<Bookmark, 'url' | 'folder' | 'title'>;
+
+function groupBy<T>(items: Set<T>, key: (item: T) => string): Map<string, T[]> {
+  const groups = new Map<string, T[]>();
+  for (const item of items) {
+    const value = key(item);
+    const group = groups.get(value);
+    if (group) group.push(item);
+    else groups.set(value, [item]);
+  }
+  return groups;
+}
+
+function matchEntries(entries: BackupEntry[], bookmarks: Bookmark[]): [BackupEntry, Bookmark][] {
+  const remainingEntries = new Set(entries);
+  const remainingBookmarks = new Set(bookmarks);
+  const matched: [BackupEntry, Bookmark][] = [];
+  const keys: ((item: BookmarkIdentity) => string)[] = [
+    item => JSON.stringify([item.url, item.folder, item.title]),
+    item => JSON.stringify([item.url, item.folder]),
+    item => item.url,
+  ];
+  // Reserve precise matches before falling back, and require uniqueness on both sides.
+  for (const key of keys) {
+    const entryGroups = groupBy(remainingEntries, key);
+    const bookmarkGroups = groupBy(remainingBookmarks, key);
+    for (const [identity, items] of entryGroups) {
+      const candidates = bookmarkGroups.get(identity);
+      const item = items.length === 1 ? items[0] : undefined;
+      const bookmark = candidates?.length === 1 ? candidates[0] : undefined;
+      if (!item || !bookmark) continue;
+      remainingEntries.delete(item);
+      remainingBookmarks.delete(bookmark);
+      matched.push([item, bookmark]);
+    }
+  }
+  return matched;
+}
+
 /** Restore metadata only; do not create, delete, or move Chrome bookmarks. IDs are device-specific. */
 export async function importBackup(input: unknown) {
   const backup = parseBackup(input);
   const settings = await settingsForRestore(backup);
   let restored = 0;
-  let skipped = 0;
   await db.transaction('rw', db.bookmarks, db.drafts, db.tasks, db.snapshots, async () => {
     const bookmarks = await db.bookmarks.toArray();
-    const used = new Set<string>();
-    for (const item of backup.entries) {
-      const matches = bookmarks.filter(bookmark => bookmark.url === item.url && !used.has(bookmark.id));
-      const bookmark = matches.find(candidate => candidate.folder === item.folder) ?? (matches.length === 1 ? matches[0] : undefined);
-      if (!bookmark) { skipped++; continue; }
-      used.add(bookmark.id);
+    for (const [item, bookmark] of matchEntries(backup.entries, bookmarks)) {
       await db.bookmarks.update(bookmark.id, {
         category: item.category,
         tags: item.tags,
@@ -77,7 +112,7 @@ export async function importBackup(input: unknown) {
   await setSettings(settings);
   return {
     restored,
-    skipped,
+    skipped: backup.entries.length - restored,
     settings,
     settingsRestored: backup.version === 2,
     categoryCount: settings.categories.length,
