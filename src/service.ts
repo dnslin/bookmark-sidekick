@@ -7,6 +7,7 @@ import type { Message } from './messages';
 
 const ALARM = 'bookmark-sidekick-work';
 let syncChain: Promise<unknown> = Promise.resolve();
+let pendingSync: Promise<string[]> | undefined;
 let working = false;
 let enqueueChain: Promise<unknown> = Promise.resolve();
 
@@ -15,32 +16,44 @@ export async function ensureAlarm() {
 }
 
 export function syncBookmarks(): Promise<string[]> {
+  // Share only a queued pass. A request during a running pass must read a new tree.
+  if (pendingSync) return pendingSync;
   const sync = syncChain.catch(() => undefined).then(async () => {
+    pendingSync = undefined;
     const native = flattenBookmarks(await chrome.bookmarks.getTree());
     const added: string[] = [];
     await db.transaction('rw', db.bookmarks, db.drafts, db.tasks, db.snapshots, async () => {
       const old = new Map((await db.bookmarks.toArray()).map(b => [b.id, b]));
       const alive = new Set(native.map(b => b.id));
+      const changed: Bookmark[] = [];
+      const invalidated: string[] = [];
+      const changedUrls: string[] = [];
       for (const item of native) {
         const existing = old.get(item.id);
+        if (existing && existing.title === item.title && existing.url === item.url && existing.folder === item.folder && existing.addedAt === item.addedAt) continue;
         const merged = mergeNative(existing, item);
         if (!existing) added.push(item.id);
-        await db.bookmarks.put(merged);
+        changed.push(merged);
         if (existing && existing.revision !== merged.revision) {
-          await db.drafts.delete(item.id);
-          await db.tasks.delete(item.id);
-          if (existing.url !== item.url) await db.snapshots.delete(item.id);
+          invalidated.push(item.id);
+          if (existing.url !== item.url) changedUrls.push(item.id);
         }
       }
       const removed = [...old.keys()].filter(id => !alive.has(id));
-      await db.bookmarks.bulkDelete(removed);
-      await db.drafts.bulkDelete(removed);
-      await db.tasks.bulkDelete(removed);
-      await db.snapshots.bulkDelete(removed);
+      if (changed.length) await db.bookmarks.bulkPut(changed);
+      if (removed.length) await db.bookmarks.bulkDelete(removed);
+      const obsolete = [...removed, ...invalidated];
+      if (obsolete.length) {
+        await db.drafts.bulkDelete(obsolete);
+        await db.tasks.bulkDelete(obsolete);
+      }
+      const obsoleteSnapshots = [...removed, ...changedUrls];
+      if (obsoleteSnapshots.length) await db.snapshots.bulkDelete(obsoleteSnapshots);
     });
     return added;
   });
   syncChain = sync;
+  pendingSync = sync;
   return sync;
 }
 
@@ -84,7 +97,8 @@ export async function pump(): Promise<void> {
       const settings = await getSettings();
       if (!isConfigured(settings) || settings.paused) return;
       const batch = await db.transaction('rw', db.tasks, async () => {
-        const pending = (await db.tasks.toArray()).filter(t => isClaimable(t, Date.now())).slice(0, 6);
+        const now = Date.now();
+        const pending = await db.tasks.where('status').anyOf(['pending', 'running']).filter(t => isClaimable(t, now)).limit(6).toArray();
         for (const task of pending) {
           await db.tasks.update(task.bookmarkId, { status: 'running', leaseUntil: Date.now() + 60_000, attempts: task.attempts + 1 });
         }
@@ -277,24 +291,27 @@ export function initializeBackground() {
     });
     return true;
   });
+  const report = (error: unknown) => { console.error('书签后台操作失败', error); };
   const boot = async () => {
     await chrome.storage.local.setAccessLevel({ accessLevel: 'TRUSTED_CONTEXTS' });
     await chrome.sidePanel.setPanelBehavior({ openPanelOnActionClick: true });
     await ensureAlarm();
     await syncBookmarks();
-    void pump();
+    void pump().catch(report);
   };
-  chrome.runtime.onInstalled.addListener(() => { void boot().catch(() => undefined); });
-  chrome.runtime.onStartup.addListener(() => { void boot().catch(() => undefined); });
-  chrome.alarms.onAlarm.addListener(alarm => { if (alarm.name === ALARM) void pump().catch(() => undefined); });
-  const sync = () => { void syncBookmarks().catch(() => undefined); };
+  chrome.runtime.onInstalled.addListener(() => { void boot().catch(report); });
+  chrome.runtime.onStartup.addListener(() => { void boot().catch(report); });
+  chrome.alarms.onAlarm.addListener(alarm => { if (alarm.name === ALARM) void pump().catch(report); });
+  const sync = () => { void syncBookmarks().catch(report); };
+  let importing = false;
   // Only the explicit SAVE path queues auto-classification. Native onCreated is also fired
   // by our own create() call, so queuing here would race and replace the auto task.
-  chrome.bookmarks.onCreated.addListener(sync);
+  chrome.bookmarks.onImportBegan.addListener(() => { importing = true; });
+  chrome.bookmarks.onCreated.addListener(() => { if (!importing) sync(); });
   chrome.bookmarks.onChanged.addListener(sync);
   chrome.bookmarks.onMoved.addListener(sync);
   chrome.bookmarks.onRemoved.addListener(sync);
-  chrome.bookmarks.onImportEnded.addListener(sync);
-  void chrome.sidePanel.setPanelBehavior({ openPanelOnActionClick: true }).catch(() => undefined);
-  void ensureAlarm().catch(() => undefined);
+  chrome.bookmarks.onImportEnded.addListener(() => { importing = false; sync(); });
+  void chrome.sidePanel.setPanelBehavior({ openPanelOnActionClick: true }).catch(report);
+  void ensureAlarm().catch(report);
 }
