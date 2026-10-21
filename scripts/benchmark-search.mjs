@@ -40,3 +40,17 @@ assert.equal(result.hits[0].bookmarkId,'boundary');
 assert.ok(result.hits[0].snippet.text.includes('goroutine'));
 assert.ok(result.hits[0].snippet.text.includes('泄漏'));
 console.log(JSON.stringify({boundaryCharacters:text.length,firstQueryAndIndexMs:round(performance.now()-began),snippet:result.hits[0].snippet},null,2));
+
+for (const {name, text, query, expected} of [
+  {name:'dense-short-term', text:'a '.repeat(200000), query:'a', expected:'a'},
+  {name:'unicode-expansion-at-tail', text:'İ 正文填充。'.repeat(71430).slice(0,499970)+'🙂 最后 quartz 泄漏。', query:'quartz 泄漏', expected:'quartz'},
+]) {
+  const beforeHeap=process.memoryUsage().heapUsed;
+  const index=createLibrarySearch([{id:'edge',title:'边界正文',url:'https://example.com/edge',category:'',tags:[],summary:'',addedAt:1}],[{bookmarkId:'edge',url:'https://example.com/edge',capturedAt:1,text}]);
+  const start=performance.now();const result=index.search(query);const elapsed=performance.now()-start;
+  assert.deepEqual(result.hits.map(hit=>hit.bookmarkId),['edge']);
+  const snippet=result.hits[0].snippet;
+  assert.ok(snippet.text.length<=120);assert.equal(snippet.text.isWellFormed(),true);
+  assert.ok(snippet.ranges.some(([start,end])=>snippet.text.slice(start,end)===expected));
+  console.log(JSON.stringify({case:name,characters:text.length,firstQueryAndIndexMs:round(elapsed),heapDeltaMiB:round((process.memoryUsage().heapUsed-beforeHeap)/1024/1024),snippetCharacters:snippet.text.length,highlightRanges:snippet.ranges.length,firstMarked:snippet.text.slice(...snippet.ranges[0])},null,2));
+}

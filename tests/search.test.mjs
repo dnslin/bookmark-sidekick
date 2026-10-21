@@ -92,6 +92,51 @@ test('五十万字符正文末尾可以命中，片段保留命中文本且不�
   assert.ok(!hits[0].snippet.text.includes('\uFFFD'));
 });
 
+test('四十万字符中重复短词仍返回完整命中与有界片段', () => {
+  const {createLibrarySearch} = load();
+  for (const [term, text] of [['a', 'a '.repeat(200000)], ['的', '的'.repeat(400000)]]) {
+    const index = createLibrarySearch([bookmark('a'), bookmark('b')], [snapshot('a', text), snapshot('b', '普通正文')]);
+    const result = index.search(term);
+    assert.ok(ids(result).includes('a'));
+    const excerpt = result.hits.find(hit => hit.bookmarkId === 'a').snippet;
+    assert.ok(excerpt.text.length <= 120);
+    const marked = excerpt.ranges.map(([start, end]) => excerpt.text.slice(start, end));
+    assert.ok(marked.join('').length > term.length);
+    assert.ok(marked.every(value => value.replaceAll(term, '') === ''));
+    assert.equal(result.snapshotCount, 2);
+  }
+});
+
+test('大小写转换扩展字符后，片段范围仍指向原文而不是转换后的偏移', () => {
+  const {createLibrarySearch} = load();
+  for (const text of ['İ quartz end', 'İ'.repeat(80) + '🙂 最后 quartz 与泄漏。', 'İ 正文填充。'.repeat(71430).slice(0, 499970) + '🙂 最后 quartz 与泄漏。']) {
+    const index = createLibrarySearch([bookmark('a')], [snapshot('a', text)]);
+    const excerpt = index.search('quartz').hits[0].snippet;
+    assert.ok(excerpt.text.includes('quartz'));
+    assert.ok(excerpt.text.length <= 120);
+    assert.equal(excerpt.text.isWellFormed(), true);
+    assert.deepEqual(excerpt.ranges.map(([start, end]) => excerpt.text.slice(start, end)), ['quartz']);
+  }
+  const index = createLibrarySearch([bookmark('a')], [snapshot('a', 'İstanbul')]);
+  const excerpt = index.search('i').hits[0].snippet;
+  assert.deepEqual(excerpt.ranges.map(([start, end]) => excerpt.text.slice(start, end)), ['İ']);
+});
+
+test('片段两端不切断 UTF16 表情字符，超长词的高亮仍在展示范围内', () => {
+  const {createLibrarySearch} = load();
+  const text = 'x'.repeat(50) + '🙂' + 'x'.repeat(35) + 'quartz' + 'x'.repeat(67) + '🙂' + 'x'.repeat(50);
+  const index = createLibrarySearch([bookmark('a')], [snapshot('a', text)]);
+  const excerpt = index.search('quartz').hits[0].snippet;
+  assert.equal(excerpt.text.isWellFormed(), true);
+  assert.ok(excerpt.text.length <= 120);
+  assert.deepEqual(excerpt.ranges.map(([start, end]) => excerpt.text.slice(start, end)), ['quartz']);
+  const longTerm = 'x'.repeat(200);
+  const longIndex = createLibrarySearch([bookmark('a')], [snapshot('a', `before ${longTerm} after`)]);
+  const longExcerpt = longIndex.search(longTerm).hits[0].snippet;
+  assert.ok(longExcerpt.ranges.length);
+  assert.ok(longExcerpt.ranges.every(([start, end]) => start >= 0 && end <= longExcerpt.text.length));
+});
+
 test('没有快照仍可搜索元数据；HTML 不进入检索，过期 URL 的正文不命中', () => {
   const {createLibrarySearch} = load();
   const index = createLibrarySearch([bookmark('a',{title:'TypeScript'}),bookmark('b'),bookmark('c',{url:'https://example.com/new'})],[

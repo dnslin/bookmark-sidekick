@@ -50,6 +50,20 @@ test('初次正文读取失败返回明确错误，不将失败显示成空结�
   assert.equal(worker.messages.some(value=>value.type==='result'),false);
 });
 
+test('大量重复正文命中经过 Worker 返回结果，大小写扩展不使片段范围错位', async t=>{
+  const worker=setup(t,{rows:[body('a '.repeat(200000))]});
+  await worker.request(1,'a');await until(()=>worker.messages.some(value=>value.type==='result'||value.type==='error'));
+  const first=worker.messages.at(-1);
+  assert.equal(first.type,'result');assert.equal(first.hits[0].bookmarkId,'a');
+  assert.ok(first.hits[0].snippet.text.length<=120);
+  await worker.change([body('İ 正文填充。'.repeat(71430).slice(0,499970)+'🙂 quartz end',{capturedAt:101})]);
+  await worker.request(2,'quartz');await until(()=>worker.messages.at(-1)?.id===2);
+  const result=worker.messages.at(-1);
+  assert.equal(result.type,'result');
+  const excerpt=result.hits[0].snippet;
+  assert.deepEqual(excerpt.ranges.map(([start,end])=>excerpt.text.slice(start,end)),['quartz']);
+});
+
 test('正文尚未准备完成时收到新查询，只为最新查询返回结果', async t=>{
   let release;const gate=new Promise(resolve=>{release=resolve;});
   const worker=setup(t,{rows:[body('zircon')],gate});await worker.request(1,'quartz');await worker.request(2,'zircon');release();
