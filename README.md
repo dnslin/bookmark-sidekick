@@ -9,6 +9,7 @@
 <p align="center">
   <a href="#安装">安装</a> ·
   <a href="#开始使用">开始使用</a> ·
+  <a href="CHANGELOG.md">更新日志</a> ·
   <a href="PRIVACY.md">隐私政策</a> ·
   <a href="https://github.com/dnslin/bookmark-sidekick/issues">反馈问题</a>
 </p>
