@@ -1,4 +1,4 @@
-import type { Snapshot } from './domain';
+import type { BookmarkEdits, BulkEdits, ReadingState, Snapshot } from './domain';
 export type Message =
   | { type: 'SYNC' }
   | { type: 'ANALYZE'; ids?: string[] }
@@ -7,10 +7,13 @@ export type Message =
   | { type: 'TEST_MODEL' }
   | { type: 'APPLY'; ids: string[] }
   | { type: 'EDIT_DRAFT'; id: string; category: string }
-  | { type: 'EDIT'; id: string; title: string; category: string }
+  | { type: 'EDIT'; id: string; changes: BookmarkEdits }
+  | { type: 'BULK_EDIT'; ids: string[]; changes: BulkEdits }
+  | { type: 'SET_READING'; id: string; state: ReadingState }
+  | { type: 'SAVE_PROGRESS'; id: string; capturedAt: number; progress: number }
   | { type: 'DELETE'; id: string }
   | { type: 'CHECK'; id: string }
-  | { type: 'SAVE'; url: string; title: string; snapshot?: Omit<Snapshot, 'bookmarkId' | 'capturedAt'> };
+  | { type: 'SAVE'; url: string; title: string; snapshot?: Omit<Snapshot, 'bookmarkId' | 'capturedAt' | 'progress'> };
 
 type Reply<T> = { ok: true; value: T } | { ok: false; error: string };
 export async function rpc<T = unknown>(message: Message): Promise<T> {

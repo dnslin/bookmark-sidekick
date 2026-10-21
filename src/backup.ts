@@ -1,7 +1,6 @@
 import { db } from './db';
 import { getSettings, setSettings, settingsSchema } from './settings';
-import type { Settings } from './settings';
-import { categoriesFromEntries, parseBackup } from './backup-format';
+import { parseBackup } from './backup-format';
 import type { ParsedBackup } from './backup-format';
 import type { Bookmark } from './domain';
 
@@ -16,7 +15,7 @@ export async function exportBackup() {
   ]);
   const snapshots = new Map(storedSnapshots.map(snapshot => [snapshot.bookmarkId, snapshot]));
   return {
-    format: 'bookmark-sidekick', version: 2 as const, exportedAt: new Date().toISOString(),
+    format: 'bookmark-sidekick', version: 3 as const, exportedAt: new Date().toISOString(),
     settings: {
       baseUrl: settings.baseUrl,
       apiKey: settings.apiKey,
@@ -33,19 +32,11 @@ export async function exportBackup() {
         category: bookmark.category,
         tags: bookmark.tags,
         summary: bookmark.summary,
-        ...(snapshot ? { snapshot: { html: snapshot.html, text: snapshot.text, capturedAt: snapshot.capturedAt } } : {}),
+        readingState: bookmark.readingState,
+        ...(snapshot ? { snapshot: { html: snapshot.html, text: snapshot.text, capturedAt: snapshot.capturedAt, progress: snapshot.progress } } : {}),
       };
     }),
   };
-}
-
-async function settingsForRestore(backup: ParsedBackup): Promise<Settings> {
-  if (backup.version === 2) return settingsSchema.parse({ ...backup.settings, paused: false });
-
-  const current = await getSettings();
-  const backupCategories = categoriesFromEntries(backup);
-  const categories = [...new Set([...backupCategories, ...current.categories])].slice(0, 20);
-  return settingsSchema.parse({ ...current, categories });
 }
 
 type BackupEntry = ParsedBackup['entries'][number];
@@ -91,7 +82,7 @@ function matchEntries(entries: BackupEntry[], bookmarks: Bookmark[]): [BackupEnt
 /** Restore metadata only; do not create, delete, or move Chrome bookmarks. IDs are device-specific. */
 export async function importBackup(input: unknown) {
   const backup = parseBackup(input);
-  const settings = await settingsForRestore(backup);
+  const settings = settingsSchema.parse({ ...backup.settings, paused: false });
   let restored = 0;
   await db.transaction('rw', db.bookmarks, db.drafts, db.tasks, db.snapshots, async () => {
     const bookmarks = await db.bookmarks.toArray();
@@ -100,12 +91,21 @@ export async function importBackup(input: unknown) {
         category: item.category,
         tags: item.tags,
         summary: item.summary,
+        readingState: item.readingState,
         manual: true,
         revision: bookmark.revision + 1,
       });
       await db.drafts.delete(bookmark.id);
       await db.tasks.delete(bookmark.id);
-      if (item.snapshot) await db.snapshots.put({ ...item.snapshot, bookmarkId: bookmark.id, url: bookmark.url });
+      if (item.snapshot) {
+        const existing = await db.snapshots.get(bookmark.id);
+        let capturedAt = item.snapshot.capturedAt;
+        if (existing) {
+          const sameContent = existing.html === item.snapshot.html && existing.text === item.snapshot.text;
+          capturedAt = sameContent ? existing.capturedAt : Math.max(existing.capturedAt + 1, capturedAt);
+        }
+        await db.snapshots.put({ ...item.snapshot, capturedAt, bookmarkId: bookmark.id, url: bookmark.url });
+      }
       restored++;
     }
   });
@@ -114,7 +114,6 @@ export async function importBackup(input: unknown) {
     restored,
     skipped: backup.entries.length - restored,
     settings,
-    settingsRestored: backup.version === 2,
     categoryCount: settings.categories.length,
   };
 }
