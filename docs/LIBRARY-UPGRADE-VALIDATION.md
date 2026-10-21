@@ -2,7 +2,7 @@
 
 日期：2026-10-21。分支：`codex/library-upgrade`。
 
-三项功能已按确认方案实现。沿用现有系统字体、颜色、书签行和「最近／分类／待确认」导航。完整自动检查通过，隔离浏览器中的数据读写、正文搜索、阅读与键盘流程通过。
+三项功能已按确认方案实现。沿用现有系统字体、颜色、书签行和「最近／分类／待确认」导航。完整自动检查、隔离浏览器验证及真实 Chrome 扩展加载、站点权限与 MV3 后台重启验证均通过。
 
 ## 实现结果
 
@@ -74,7 +74,43 @@
 
 最终隔离页面捕获的未处理 JavaScript 异常为 0。线程故障与数据库错误是明确注入的测试场景，其界面错误反馈和恢复均单独检查。
 
-## 截图
+## 真实 Chrome 扩展验收
+
+使用已安装的官方 Google Chrome `155.0.8059.80`，通过原生扩展管理页加载 `.output/chrome-mv3`。扩展 ID 为 `aimgndkeefgblddienmpaimmjnilojlc`，来源路径和启用状态已在 Chrome 界面核对。使用独立配置 `.output/chrome-real-qa-profile`，没有登录账号或导入个人书签。
+
+本轮运行完整的已构建扩展。书签、权限、侧边栏、内容提取脚本、后台消息、IndexedDB 和正文搜索线程都使用真实 Chrome 实现，没有替换 API，也没有修改构建产物或 CSP。三篇本地文章通过扩展的「收藏」操作建立原生书签与快照，没有直接向数据库写入样例。
+
+| 场景 | 实际结果 |
+| --- | --- |
+| 未打包扩展加载 | 开发者模式下选择构建目录，Chrome 显示「扩展程序已加载完毕」；从扩展按钮打开实际侧边栏，初始书签数为 0。 |
+| 拒绝读取权限 | 点击收藏后出现 Chrome 原生「读取和更改您在 localhost 上的数据」弹窗；拒绝后仍创建原生书签，提示「未授权读取网页，仅保存书签」；详情没有正文，阅读按钮禁用，正文专属关键词无结果。 |
+| 允许读取权限 | 在 `127.0.0.1` 文章上允许原生弹窗，实际注入 `extract.js` 并保存正文；同站点第二篇收藏无需重复弹窗。搜索仅在长文章末尾出现的「真实扩展缓存命中」，返回正确书签和真实片段。 |
+| 手动标签和批量整理 | 先为一条书签保存「手动验收」；随后全选三条，统一改为工具分类、追加「Chrome批量」、加入稍后读；提示三项成功。重载后原标签和新增标签均保留，没有覆盖原标签。 |
+| 真实滚动和位置恢复 | 从稍后读打开快照，使用实际侧栏滚动到 43%；关闭侧栏并停止后台，再打开后菜单显示「继续阅读 · 43%」，正文容器恢复到 43%。 |
+| 关闭侧栏后停止后台 | 在 `chrome://serviceworker-internals/` 对本扩展点击 Stop；确认状态变为 `STOPPED`、进程为 0、线程为 -1。重新打开侧栏后，后台恢复 `RUNNING`，进程从 79903 变为 82470。分类、标签、阅读状态及位置保留。 |
+| 侧栏保持打开时停止后台 | 再次 Stop，确认 `STOPPED`；直接在现有阅读页点击「标记已读」。实际后台消息唤醒新线程，状态变为 `RUNNING`，线程从 1 变为 2；界面提示已读成功。没有手动点击 Start，也没有打开后台 DevTools 维持运行。 |
+| 扩展重新加载 | 从扩展管理页点击重新加载，Chrome 显示「已重新加载」。再次打开侧栏，三条书签、工具分类、两个标签、待读两条及已读一条均保留；已授予站点访问权限仍生效。扩展管理页未出现错误条目。 |
+| 拒绝后的补授权 | 回到 localhost 页面，再次点击顶部收藏并允许权限；提示已有书签快照已更新，书签总数仍为三条。搜索此前无结果的正文关键词，正确返回原书签；其两个标签和待读状态保留，正文覆盖数为 3。 |
+| 稍后读筛选 | 待阅读显示两条，已读显示一条；已读书签仍保留在全部收藏中。 |
+| 真实搜索定位 | 重载后搜索「批量整理正文线索」，打开命中片段后跳到正文末尾，实际可见文字高亮；阅读位置为 100%，状态仍为阅读中，完成仍需显式标记。 |
+
+本轮没有发现需要修复的三项功能缺陷，没有修改产品代码、依赖或权限声明。`git diff --quiet 387cbb9 -- src entrypoints tests package.json package-lock.json wxt.config.ts` 通过，确认验收所用实现与上一轮已通过 153 项自动检查的提交一致。本轮没有为文档和截图重复运行该组自动测试。
+
+本地文章由 `python3 -m http.server 47833 --bind 127.0.0.1 --directory .output/chrome-real-qa-site` 提供。Chrome 使用 `--user-data-dir=/Volumes/data/project/bookmark-sidekick/.output/chrome-real-qa-profile --no-first-run --no-default-browser-check --remote-debugging-port=0` 启动，所有页面操作、权限处理和后台停止均通过真实 Chrome 界面完成。
+
+真实 Chrome 截图：
+
+- [扩展已加载](/Volumes/data/project/bookmark-sidekick/docs/library-chrome-loaded.png)
+- [原生权限弹窗](/Volumes/data/project/bookmark-sidekick/docs/library-chrome-permission.png)
+- [批量修改三条书签](/Volumes/data/project/bookmark-sidekick/docs/library-chrome-bulk.png)
+- [正文末尾搜索结果](/Volumes/data/project/bookmark-sidekick/docs/library-chrome-search.png)
+- [真实滚动至 43%](/Volumes/data/project/bookmark-sidekick/docs/library-chrome-reader-progress.png)
+- [后台停止后的 43% 恢复](/Volumes/data/project/bookmark-sidekick/docs/library-chrome-reader-restored.png)
+- [后台 STOPPED](/Volumes/data/project/bookmark-sidekick/docs/library-chrome-worker-stopped.png)
+- [后台再次 RUNNING 与已读成功](/Volumes/data/project/bookmark-sidekick/docs/library-chrome-worker-restarted.png)
+- [正文末尾定位与高亮](/Volumes/data/project/bookmark-sidekick/docs/library-chrome-search-located.png)
+
+## 隔离浏览器截图
 
 截图来自实际 React 界面和隔离示例数据，不是原型，也不是用户个人书签。
 
@@ -86,7 +122,7 @@
 
 ## 验证边界
 
-- Chrome 书签、标签页、权限、存储配置接口使用测试替身；实际数据库、组件、搜索库与工作线程正常运行。未访问或修改用户的真实 Chrome 书签。
+- 隔离浏览器一节的 Chrome 接口使用测试替身；真实 Chrome 一节使用完整扩展和实际 Chrome API。两组样例均与个人书签库隔离，未访问或修改用户个人 Chrome 书签。
 - 没有连接真实模型；AI 分类的在途修改、手动保护和阅读并发使用隔离自动测试覆盖。
-- 真实 Chrome 加载扩展、权限弹窗与 MV3 后台进程重启尚未验收。可在 Chrome 扩展管理页重新加载 `.output/chrome-mv3`，继续个人书签库验收。
+- 真实扩展加载、原生权限拒绝与允许、扩展重载，以及两种 MV3 后台 Stop 后唤醒场景已验收。本轮没有使用个人书签库，也不将本地样例结果等同于所有外部网站的正文提取效果。
 - 没有推送、创建发布或合并。本次改动保留在本地功能分支上。
