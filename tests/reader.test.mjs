@@ -19,6 +19,35 @@ test('不同段落不拼接成不存在的词，匹配忽略英文大小写', ()
   assert.deepEqual(findReaderMatches([{text:'Read REACT again',block:1}], ['react']), [{nodeIndex:0,start:5,end:10}]);
 });
 
+test('普通阅读没有搜索词时直接跳过全文定位', () => {
+  const { findReaderMatches } = load();
+  const parts = [{ get text() { assert.fail('没有搜索词时不应扫描正文'); } }];
+  assert.deepEqual(findReaderMatches(parts, []), []);
+  assert.deepEqual(findReaderMatches(parts, [' \n ']), []);
+});
+
+test('定位使用原文 UTF-16 范围，保留大小写扩展、表情和跨节点空白', () => {
+  const { findReaderMatches } = load();
+  assert.deepEqual(findReaderMatches([{text:'İ中文🧭React',block:1}], ['i','react']), [
+    {nodeIndex:0,start:0,end:1}, {nodeIndex:0,start:5,end:10},
+  ]);
+  assert.deepEqual(findReaderMatches([{text:'A \n',block:1},{text:'\t B',block:1}], ['a b']), [
+    {nodeIndex:0,start:0,end:2}, {nodeIndex:1,start:2,end:3},
+  ]);
+});
+
+test('五十万字符正文末尾仍能跨 inline 节点定位，记录耗时与堆增量', t => {
+  const { findReaderMatches } = load();
+  const prefix = '正文 English text 继续阅读。'.repeat(25000).slice(0, 499992);
+  const parts = [{text:prefix+'İ🧭 中断',block:1},{text:'恢复',block:1}];
+  const before = process.memoryUsage().heapUsed;
+  const started = performance.now();
+  assert.deepEqual(findReaderMatches(parts, ['中断恢复']), [
+    {nodeIndex:0,start:prefix.length+4,end:prefix.length+6}, {nodeIndex:1,start:0,end:2},
+  ]);
+  t.diagnostic(`正文 ${parts.reduce((sum,part)=>sum+part.text.length,0)} 字符；定位 ${(performance.now()-started).toFixed(1)} ms；堆增量 ${((process.memoryUsage().heapUsed-before)/1024/1024).toFixed(1)} MiB（仅诊断，不作机器耗时断言）`);
+});
+
 test('阅读位置停止 500ms 后保存，持续滚动最多两秒提交一次', async t => {
   t.mock.timers.enable({ apis:['setTimeout'] });
   const { createProgressSaver } = load();

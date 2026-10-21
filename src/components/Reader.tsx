@@ -45,7 +45,7 @@ export default function Reader({ bookmark, snapshot, matchTerms = [], busy, run,
     const frame = requestAnimationFrame(() => {
       const element = scroll.current;
       if (!element || !content.current) return;
-      const mark = highlightReaderMatches(content.current, matchTerms);
+      const mark = matchTerms.length ? highlightReaderMatches(content.current, matchTerms) : undefined;
       if (matchTerms.length) {
         if (mark) element.scrollTop = Math.max(0, element.scrollTop + mark.getBoundingClientRect().top - element.getBoundingClientRect().top - 40);
         else { element.scrollTop = 0; notifyRef.current('已打开快照，未能定位命中段落'); }

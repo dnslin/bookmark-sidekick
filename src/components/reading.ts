@@ -1,33 +1,64 @@
 type TextPart = { text: string; block?: unknown };
 type TextMatch = { nodeIndex: number; start: number; end: number };
 
-export function findReaderMatches(parts: TextPart[], terms: string[]): TextMatch[] {
-  let text = '';
-  const positions: (TextMatch | undefined)[] = [];
-  for (const [nodeIndex, part] of parts.entries()) {
-    if (nodeIndex > 0 && part.block !== parts[nodeIndex - 1]?.block && text && !text.endsWith(' ')) { text += ' '; positions.push(undefined); }
-    let offset = 0;
-    for (const character of part.text) {
-      const normalized = /\s/u.test(character) ? ' ' : character.toLowerCase();
-      if (!(normalized === ' ' && text.endsWith(' '))) {
-        text += normalized;
-        for (let i = 0; i < normalized.length; i++) positions.push({ nodeIndex, start: offset, end: offset + character.length });
+function originalRange(text: string, start: number, end: number) {
+  let offset = 0;
+  let normalizedOffset = 0;
+  let wasSpace = false;
+  let from = -1;
+  let to = 0;
+  for (const character of text) {
+    const space = /\s/u.test(character);
+    if (!space || !wasSpace) {
+      const length = space ? 1 : character.toLowerCase().length;
+      if (normalizedOffset < end && normalizedOffset + length > start) {
+        if (from < 0) from = offset;
+        to = offset + character.length;
       }
-      offset += character.length;
+      normalizedOffset += length;
     }
+    offset += character.length;
+    wasSpace = space;
+    if (normalizedOffset >= end) break;
   }
+  return { start: from, end: to };
+}
+
+export function findReaderMatches(parts: TextPart[], terms: string[]): TextMatch[] {
+  const queries = [...new Set(terms.map(value => value.replace(/\s+/gu, ' ').trim().toLowerCase()).filter(Boolean))];
+  if (!queries.length) return [];
+  const chunks: string[] = [];
+  const spans: { nodeIndex: number; start: number; end: number; skippedSpace: boolean }[] = [];
+  let length = 0;
+  let wasSpace = false;
+  for (const [nodeIndex, part] of parts.entries()) {
+    if (nodeIndex > 0 && part.block !== parts[nodeIndex - 1]?.block && length && !wasSpace) {
+      chunks.push(' ');
+      length++;
+      wasSpace = true;
+    }
+    // Keep one string per node; only matched nodes need their original offsets scanned.
+    let normalized = part.text.replace(/\s+/gu, ' ').replace(/./gsu, character => character.toLowerCase());
+    const skippedSpace = wasSpace && normalized.startsWith(' ');
+    if (skippedSpace) normalized = normalized.slice(1);
+    spans.push({ nodeIndex, start: length, end: length + normalized.length, skippedSpace });
+    chunks.push(normalized);
+    length += normalized.length;
+    if (normalized) wasSpace = normalized.endsWith(' ');
+  }
+  const text = chunks.join('');
   const matches: TextMatch[] = [];
-  for (const term of new Set(terms.map(value => value.replace(/\s+/gu, ' ').trim().toLowerCase()).filter(Boolean))) {
+  for (const term of queries) {
     const index = text.indexOf(term);
     if (index < 0) continue;
-    const perNode = new Map<number, TextMatch>();
-    for (const position of positions.slice(index, index + term.length)) {
-      if (!position) continue;
-      const match = perNode.get(position.nodeIndex);
-      if (match) match.end = position.end;
-      else perNode.set(position.nodeIndex, { ...position });
+    const end = index + term.length;
+    for (const span of spans) {
+      if (span.start >= end) break;
+      if (span.end <= index || span.start === span.end) continue;
+      const skipped = span.skippedSpace ? 1 : 0;
+      const range = originalRange(parts[span.nodeIndex]!.text, Math.max(index - span.start, 0) + skipped, Math.min(end, span.end) - span.start + skipped);
+      matches.push({ nodeIndex: span.nodeIndex, ...range });
     }
-    matches.push(...perNode.values());
   }
   const merged: TextMatch[] = [];
   for (const match of matches.sort((a, b) => a.nodeIndex - b.nodeIndex || a.start - b.start)) {
@@ -41,6 +72,7 @@ export function findReaderMatches(parts: TextPart[], terms: string[]): TextMatch
 export function highlightReaderMatches(content: HTMLElement, terms: string[]): HTMLElement | undefined {
   const document = content.ownerDocument;
   for (const mark of content.querySelectorAll('mark[data-reader-match]')) mark.replaceWith(document.createTextNode(mark.textContent || ''));
+  if (!terms.length) return;
   content.normalize();
   const walker = document.createTreeWalker(content, NodeFilter.SHOW_TEXT);
   const nodes: Text[] = [];
