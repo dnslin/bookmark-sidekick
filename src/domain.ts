@@ -1,6 +1,9 @@
 /** Pure functions. Kept dependency-free so the critical rules can run under node:test. */
 export const DEFAULT_CATEGORIES = ['开发', 'AI', '设计', '工具', '产品', '文章', '工作', '生活', '其他'];
+export const MAX_TAGS = 20;
+export const MAX_TAG_LENGTH = 32;
 export type LinkState = 'unknown' | 'available' | 'unavailable' | 'restricted';
+export type ReadingState = 'none' | 'later' | 'reading' | 'read';
 export interface Bookmark {
   id: string;
   title: string;
@@ -12,6 +15,7 @@ export interface Bookmark {
   tags: string[];
   summary: string;
   manual: boolean;
+  readingState: ReadingState;
   linkState: LinkState;
   checkedAt?: number;
   checkDetail?: string;
@@ -39,6 +43,13 @@ export interface Snapshot {
   html: string;
   text: string;
   capturedAt: number;
+  progress: number;
+}
+export type BookmarkEdits = Partial<Pick<Bookmark, 'title' | 'category' | 'tags'>>;
+export interface BulkEdits {
+  category?: string;
+  tags?: { operation: 'add' | 'remove'; values: string[] };
+  readingState?: 'none' | 'later' | 'read';
 }
 export interface NativeNode {
   id: string;
@@ -67,7 +78,23 @@ export function hostname(input: string): string {
   try { return new URL(input).hostname; } catch { return input; }
 }
 
-export function flattenBookmarks(nodes: NativeNode[], path: string[] = []): Omit<Bookmark, 'revision' | 'category' | 'tags' | 'summary' | 'manual' | 'linkState'>[] {
+export function normalizeTags(tags: string[]): string[] {
+  const result: string[] = [];
+  const seen = new Set<string>();
+  for (const input of tags) {
+    const tag = input.trim();
+    if (!tag) throw new Error('标签不能为空');
+    if (tag.length > MAX_TAG_LENGTH) throw new Error(`每个标签最多 ${MAX_TAG_LENGTH} 个字符`);
+    const key = tag.toLowerCase();
+    if (seen.has(key)) continue;
+    seen.add(key);
+    result.push(tag);
+  }
+  if (result.length > MAX_TAGS) throw new Error(`每个书签最多 ${MAX_TAGS} 个标签`);
+  return result;
+}
+
+export function flattenBookmarks(nodes: NativeNode[], path: string[] = []): Omit<Bookmark, 'revision' | 'category' | 'tags' | 'summary' | 'manual' | 'linkState' | 'readingState'>[] {
   return nodes.flatMap(node => {
     if (node.url) return [{
       id: node.id, title: node.title || node.url, url: node.url,
@@ -78,13 +105,13 @@ export function flattenBookmarks(nodes: NativeNode[], path: string[] = []): Omit
 }
 
 export function mergeNative(existing: Bookmark | undefined, native: ReturnType<typeof flattenBookmarks>[number]): Bookmark {
-  if (!existing) return { ...native, revision: 1, category: '', tags: [], summary: '', manual: false, linkState: 'unknown' };
+  if (!existing) return { ...native, revision: 1, category: '', tags: [], summary: '', manual: false, linkState: 'unknown', readingState: 'none' };
   const urlChanged = existing.url !== native.url;
   const contentChanged = urlChanged || existing.title !== native.title;
   return {
     ...existing, ...native,
     revision: existing.revision + (contentChanged ? 1 : 0),
-    ...(urlChanged ? { category: '', tags: [], summary: '', manual: false, linkState: 'unknown' as const, checkedAt: undefined, checkDetail: undefined } : {}),
+    ...(urlChanged ? { category: '', tags: [], summary: '', manual: false, readingState: 'none' as const, linkState: 'unknown' as const, checkedAt: undefined, checkDetail: undefined } : {}),
   };
 }
 

@@ -13,3 +13,7 @@ db.version(1).stores({
   snapshots: '&bookmarkId',
   tasks: '&bookmarkId, status',
 });
+db.version(2).stores({ snapshots: '&bookmarkId, capturedAt' }).upgrade(async transaction => {
+  await transaction.table('bookmarks').toCollection().modify(bookmark => { bookmark.readingState = 'none'; });
+  await transaction.table('snapshots').toCollection().modify(snapshot => { snapshot.progress = 0; });
+});

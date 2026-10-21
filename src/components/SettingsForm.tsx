@@ -5,6 +5,7 @@ import { CategoryEditor } from './CategoryEditor';
 import { clearSavedEdits } from './editor';
 import { originPattern, settingsSchema, type Settings } from '../settings';
 import type { BackupPreview } from '../backup';
+import { UNSUPPORTED_BACKUP_FORMAT } from '../backup-format';
 
 type RestoreCandidate = { fileName: string; input: unknown; preview: BackupPreview };
 export default function SettingsForm({ value, busy, unclassifiedCount, onSave, onSaved, notify, onBackup, onRestore }: { value: Settings; busy: boolean; unclassifiedCount: number; onSave: (s: Settings, test: boolean) => Promise<boolean>; onSaved: () => void; notify: (s: string) => void; onBackup: () => void; onRestore: (input: unknown, permission: Promise<boolean>) => Promise<boolean> }) {
@@ -43,9 +44,9 @@ export default function SettingsForm({ value, busy, unclassifiedCount, onSave, o
       const input = JSON.parse(await file.text()) as unknown;
       const { inspectBackup } = await import('../backup');
       setRestoreCandidate({ fileName: file.name, input, preview: inspectBackup(input) });
-    } catch {
+    } catch (cause) {
       setRestoreCandidate(undefined);
-      notify('备份文件无法读取或格式不正确');
+      notify(cause instanceof Error && cause.message === UNSUPPORTED_BACKUP_FORMAT ? cause.message : '备份文件无法读取或格式不正确');
     }
   }
 
@@ -53,7 +54,7 @@ export default function SettingsForm({ value, busy, unclassifiedCount, onSave, o
     const candidate = restoreCandidate;
     if (!candidate || busy) return;
     const model = candidate.preview.model;
-    const permission = model?.consent && model.baseUrl
+    const permission = model.consent && model.baseUrl
       ? chrome.permissions.request({ origins: [originPattern(model.baseUrl)] })
       : Promise.resolve(true);
     if (await onRestore(candidate.input, permission)) {
@@ -70,15 +71,13 @@ export default function SettingsForm({ value, busy, unclassifiedCount, onSave, o
     <label className="consent"><input type="checkbox" checked={form.consent} onChange={e => edit({ consent: e.target.checked })}/><span>允许向以上模型发送书签标题、网址、原文件夹，以及已保存的正文，用于分类和摘要。</span></label>
     {(saving || busy) && <div role="status"><progress className="analysis-progress" aria-label="正在保存设置或测试模型"/><p className="help">正在处理；模型响应超时后会自动重试，最多 3 次。</p></div>}
     <div className="button-pair"><button className="button secondary" disabled={saving || busy} onClick={() => void submit(true)}>测试连接</button><button className="button" disabled={saving || busy} onClick={() => void submit(false)}>{saving || busy ? '处理中…' : unclassifiedCount && form.consent ? '保存并分析' : '保存设置'}</button></div>
-    <div className="divider"/><h3>完整备份</h3><p className="help">包含模型地址、API Key、自定义分类、书签分类/标签/摘要和阅读快照。恢复只匹配现有 Chrome 书签，不会新增、删除或移动原生书签。</p>
+    <div className="divider"/><h3>完整备份</h3><p className="help">包含模型地址、API Key、自定义分类、书签分类/标签/摘要、阅读安排、正文与阅读位置。仅支持 v3 备份。恢复只匹配现有 Chrome 书签，不会新增、删除或移动原生书签。</p>
     <div className="button-pair"><button className="button secondary" onClick={onBackup} disabled={busy}>导出备份</button><label className="button secondary file-button">选择备份文件<input type="file" accept=".json,application/json" disabled={busy} onChange={e => { const file = e.target.files?.[0]; if (file) void chooseBackup(file); e.target.value = ''; }}/></label></div>
     {restoreCandidate && <section className="restore-preview" aria-label="恢复预览">
       <div className="restore-preview-head"><div><strong>{restoreCandidate.fileName}</strong><span>{restoreCandidate.preview.exportedAt ? new Date(restoreCandidate.preview.exportedAt).toLocaleString('zh-CN') : `备份格式 v${restoreCandidate.preview.version}`}</span></div><button className="icon-button" aria-label="取消选择备份" onClick={() => setRestoreCandidate(undefined)}><X size={15}/></button></div>
       <div className="restore-preview-stats"><span><strong>{restoreCandidate.preview.entryCount}</strong>书签</span><span><strong>{restoreCandidate.preview.snapshotCount}</strong>快照</span><span><strong>{restoreCandidate.preview.categories.length}</strong>分类</span></div>
-      {restoreCandidate.preview.model
-        ? <p>模型：{restoreCandidate.preview.model.model || '未配置'} · {restoreCandidate.preview.model.hasApiKey ? '包含 API Key' : 'API Key 为空'}</p>
-        : <p>旧版备份不含模型配置；将保留当前模型配置，并从书签数据补回分类。</p>}
-      <p className="restore-warning">{restoreCandidate.preview.model ? '确认后将覆盖当前模型配置、自定义分类，以及匹配书签的分类与快照。' : '确认后将覆盖匹配书签的分类与快照；当前模型配置不会改变。'}</p>
+      <p>模型：{restoreCandidate.preview.model.model || '未配置'} · {restoreCandidate.preview.model.hasApiKey ? '包含 API Key' : 'API Key 为空'}</p>
+      <p className="restore-warning">确认后将覆盖当前模型配置、自定义分类，以及匹配书签的整理数据、阅读安排与快照。</p>
       <div className="button-pair"><button className="button secondary" disabled={busy} onClick={() => setRestoreCandidate(undefined)}>取消</button><button className="button" disabled={busy} onClick={() => void confirmRestore()}>{busy ? '恢复中…' : '确认恢复'}</button></div>
     </section>}
     <p className="privacy-note"><AlertCircle size={15}/>备份文件包含明文 API Key，请只保存在可信位置。扩展卸载后，本地分类和快照仍会被清除。</p>

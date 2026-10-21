@@ -4,13 +4,15 @@ import { useTheme } from './components/Appearance';
 import { Detail } from './components/Detail';
 import { SiteIcon } from './components/SiteIcon';
 import { Review } from './components/Review';
-import { groupBookmarksByDate, filterBookmarks } from './library';
+import { filterBookmarks, type LibraryScope, type ReadingFilter } from './library';
+import { LibraryPanel } from './components/LibraryPanel';
+import { ReadingMenu } from './components/ReadingMenu';
 import { Navigation, type LibraryPage } from './components/Navigation';
 import { useLiveQuery } from 'dexie-react-hooks';
-import { createBookmarkSearch } from './search';
-import { ArrowLeft, Bookmark as BookmarkIcon, BookmarkPlus, Check, ChevronRight, Folder, MoreHorizontal, Pause, Play, Plus, RefreshCw, Search, Settings as SettingsIcon, Sparkles, X, AlertCircle } from 'lucide-react';
+import { useBookmarkSearch } from './use-bookmark-search';
+import { ArrowLeft, Bookmark as BookmarkIcon, BookmarkPlus, Check, ChevronRight, Folder, Pause, Play, Plus, Search, Settings as SettingsIcon, Sparkles, X, AlertCircle } from 'lucide-react';
 import { db } from './db';
-import { cleanUrl, hostname, isWebUrl } from './domain';
+import { cleanUrl, isWebUrl } from './domain';
 import type { Bookmark, Snapshot } from './domain';
 import { defaultSettings, getSettings, isConfigured, originPattern, setSettings, settingsSchema } from './settings';
 import type { Settings } from './settings';
@@ -35,6 +37,11 @@ export function App() {
   const [showCategoryCreate, setShowCategoryCreate] = useState(false);
   const [newCategory, setNewCategory] = useState('');
   const [query, search] = useState('');
+  const [scope, setScope] = useState<LibraryScope>('all');
+  const [readingFilter, setReadingFilter] = useState<ReadingFilter>('pending');
+  const [readingId, setReadingId] = useState('');
+  const [readerReturn, setReaderReturn] = useState<'home' | 'detail'>('detail');
+  const [matchTerms, setMatchTerms] = useState<string[]>([]);
   const [currentTab, setCurrentTab] = useState<chrome.tabs.Tab>();
   const [busy, setBusy] = useState('');
   const [notice, setNotice] = useState('');
@@ -42,6 +49,9 @@ export function App() {
   const [analysisTotal, setAnalysisTotal] = useState(0);
   const selected = bookmarks.find(b => b.id === selectedId);
   const snapshot = useLiveQuery(() => selectedId ? db.snapshots.get(selectedId) : undefined, [selectedId]);
+  const readingBookmark = bookmarks.find(b => b.id === readingId);
+  const readingSnapshot = useLiveQuery(() => readingId ? db.snapshots.get(readingId) : undefined, [readingId]);
+  const searchState = useBookmarkSearch(bookmarks, query);
   const configured = isConfigured(settings);
   const failed = tasks.filter(t => t.status === 'failed');
   const remaining = tasks.filter(t => t.status !== 'failed');
@@ -81,11 +91,19 @@ export function App() {
     finally { setBusy(''); }
   }
   function details(b: Bookmark) { selectId(b.id); setPage('detail'); }
+  async function readBookmark(b: Bookmark, terms: string[] = []) {
+    if (!await db.snapshots.get(b.id)) throw new Error('尚未保存正文快照，请先打开网页并重新收藏');
+    if (b.readingState === 'later') await rpc({ type: 'SET_READING', id: b.id, state: 'reading' });
+    selectId(b.id);
+    setReaderReturn(page === 'detail' ? 'detail' : 'home');
+    setMatchTerms(terms);
+    setPage('reader');
+  }
   async function open(b: Bookmark) {
     if (!isWebUrl(b.url)) { setNotice('此类链接请从 Chrome 原生书签打开'); return; }
     const saved = await db.snapshots.get(b.id);
     if (b.linkState === 'unavailable' && saved) {
-      selectId(b.id); setPage('reader'); setNotice('上次检查该页面不可访问，显示已保存的正文'); return;
+      await readBookmark(b); setNotice('上次检查该页面不可访问，显示已保存的正文'); return;
     }
     await chrome.tabs.create({ url: b.url });
   }
@@ -95,7 +113,7 @@ export function App() {
     // Permission request is called directly from the click, before awaiting unrelated work.
     const permission = chrome.permissions.request({ origins: [originPattern(tab.url)] });
     await run('save', async () => {
-      let captured: Omit<Snapshot, 'bookmarkId' | 'capturedAt'> | undefined;
+      let captured: Omit<Snapshot, 'bookmarkId' | 'capturedAt' | 'progress'> | undefined;
       let warning = '';
       if (await permission) {
         try {
@@ -113,16 +131,22 @@ export function App() {
       setNotice(warning || (result.existed ? '书签已存在，阅读快照已更新' : configured ? '已收藏，正在自动分类' : '已收藏，可稍后配置 AI 分类'));
     });
   }
-  const scoped = useMemo(() => filterBookmarks(bookmarks, category, tag), [bookmarks, category, tag]);
-  const searchBookmarks = useMemo(() => createBookmarkSearch(scoped), [scoped]);
-  const filtered = useMemo(() => searchBookmarks(query), [searchBookmarks, query]);
+  const scoped = useMemo(() => filterBookmarks(bookmarks, category, tag, scope, readingFilter), [bookmarks, category, tag, scope, readingFilter]);
+  const filtered = useMemo(() => {
+    if (!query.trim()) return scoped;
+    const byId = new Map(scoped.map(bookmark => [bookmark.id, bookmark]));
+    return searchState.hits.flatMap(hit => {
+      const bookmark = byId.get(hit.bookmarkId);
+      return bookmark ? [bookmark] : [];
+    });
+  }, [scoped, query, searchState.hits]);
   const counts = useMemo(() => {
     const map = new Map<string, number>();
     for (const b of bookmarks) if (b.category) map.set(b.category, (map.get(b.category) ?? 0) + 1);
     return [...new Set([...settings.categories, ...map.keys()])].map(name => [name, map.get(name) ?? 0] as const);
   }, [bookmarks, settings.categories]);
 
-  const nav = (p: Page) => { setPage(p); filterCategory(null); filterTag(''); search(''); };
+  const nav = (p: Page) => { setPage(p); filterCategory(null); filterTag(''); search(''); setScope('all'); setReadingFilter('pending'); };
   const tags = [...new Set(bookmarks.flatMap(b => b.tags))];
   async function createCategory() {
     const value = settingsSchema.safeParse({ ...settings, categories: [...settings.categories, newCategory.trim()] });
@@ -130,10 +154,20 @@ export function App() {
     await run('category', async () => { await setSettings(value.data); updateSettings(value.data); setNewCategory(''); setShowCategoryCreate(false); });
   }
   const tabPages = ['home', 'categories', 'review'].includes(page);
+  const analysisStatus = <>
+    {configured && tasks.length > 0 && <div className="job-card" role="status">
+      <div className="row-between"><span><span className={settings.paused ? '' : 'pulse-dot'}/>{settings.paused ? '分析已暂停' : '正在生成分类建议'}</span><button className="icon-button" aria-label={settings.paused ? '继续分析' : '暂停分析'} disabled={!!busy} onClick={() => void run('pause', async () => { await rpc({ type: 'PAUSE', paused: !settings.paused }); })}>{settings.paused ? <Play size={15}/> : <Pause size={15}/>}</button></div>
+      <progress className="analysis-progress" aria-label="书签分析进度" max={Math.max(analysisTotal, tasks.length)} value={Math.max(0, analysisTotal - tasks.length)}/>
+      <p>已完成 {Math.max(0, analysisTotal - tasks.length)} / {Math.max(analysisTotal, tasks.length)} 项{failed.length ? ` · 失败 ${failed.length} 项` : ''}</p>
+      {!settings.paused && tasks.some(t => t.status === 'running' && t.attempts > 1) && <p>响应超时，正在进行第 {Math.max(...tasks.filter(t => t.status === 'running').map(t => t.attempts)) - 1} / 3 次重试</p>}
+      <small>每完成一批更新进度；关闭侧边栏后仍可继续。</small>
+    </div>}
+    {failed.length > 0 && <div className="warning-card"><AlertCircle size={17}/><div>{failed.length} 项分析失败<p>{failed[0]?.error}</p><button className="text-button" onClick={() => void run('retry', async () => { await rpc({ type: 'RETRY' }); })}>重试失败项</button></div></div>}
+  </>;
   return <div className="app" data-page={page}>
     <header className="app-header">
       {tabPages ? <span className="brand-icon"><BookmarkIcon size={27} strokeWidth={1.6} /></span>
-        : <button className="icon-button" aria-label="返回" onClick={() => setPage(page === 'reader' ? 'detail' : 'home')}><ArrowLeft size={20}/></button>}
+        : <button className="icon-button" aria-label="返回" onClick={() => setPage(page === 'reader' ? readerReturn : 'home')}><ArrowLeft size={20}/></button>}
       <div className="brand-text"><strong>拾签</strong></div>
       {tabPages && <button className="icon-button" aria-label="收藏当前网页" disabled={!!busy || !currentTab?.url || !isWebUrl(currentTab.url)} onClick={() => void saveCurrent()}><Plus size={25}/></button>}
       <button className={`icon-button ${page === 'settings' ? 'active-icon' : ''}`} aria-label="设置" onClick={() => setPage('settings')}><SettingsIcon size={19}/></button>
@@ -142,7 +176,7 @@ export function App() {
     <AnimatePresence>{notice && <motion.div className="toast" role="status" initial={{ opacity: 0, y: reducedMotion ? 0 : -6 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0 }} transition={{ duration: 0.16 }}><span>{notice}</span><button className="icon-button" aria-label="关闭提示" onClick={() => setNotice('')}><X size={15}/></button></motion.div>}</AnimatePresence>
 
     {tabPages && <>
-      <div className="search-box"><Search size={17}/><input aria-label="搜索书签" placeholder="搜索书签" value={query} onChange={e => { search(e.target.value); if (page !== 'home') setPage('home'); }}/>{query && <button className="icon-button" aria-label="清空搜索" onClick={() => search('')}><X size={14}/></button>}</div>
+      <div className="search-box"><Search size={17}/><input aria-label="搜索书签与正文" placeholder="搜索书签与正文" value={query} onChange={e => { search(e.target.value); if (page !== 'home') setPage('home'); }}/>{query && <button className="icon-button" aria-label="清空搜索" onClick={() => search('')}><X size={14}/></button>}</div>
       <div className="current-page"><div className="current-content">
         <SiteIcon url={currentTab?.url || ''}/><div className="current-text"><span className="eyebrow">当前网页</span><strong title={currentTab?.title}>{currentTab?.title || '打开网页，开始收藏'}</strong></div>
         <button className="save-current" disabled={!!busy || !currentTab?.url || !isWebUrl(currentTab.url)} onClick={() => existing ? details(existing) : void saveCurrent()}>{existing ? <Check size={22}/> : <BookmarkPlus size={22}/>} {busy === 'save' ? '保存中' : existing ? '已收藏' : '收藏'}</button>
@@ -150,24 +184,16 @@ export function App() {
       <Navigation page={page as LibraryPage} pendingCount={drafts.length} onNavigate={nav}/>
     </>}
 
-    <motion.main key={page} className="page-stage" initial={{ opacity: 0, y: reducedMotion ? 0 : 6 }} animate={{ opacity: 1, y: 0 }} transition={{ duration: 0.18, ease: 'easeOut' }}>
-      {configured && tasks.length > 0 && <div className="job-card" role="status">
-        <div className="row-between"><span><span className={settings.paused ? '' : 'pulse-dot'}/>{settings.paused ? '分析已暂停' : '正在生成分类建议'}</span><button className="icon-button" aria-label={settings.paused ? '继续分析' : '暂停分析'} disabled={!!busy} onClick={() => void run('pause', async () => { await rpc({ type: 'PAUSE', paused: !settings.paused }); })}>{settings.paused ? <Play size={15}/> : <Pause size={15}/>}</button></div>
-        <progress className="analysis-progress" aria-label="书签分析进度" max={Math.max(analysisTotal, tasks.length)} value={Math.max(0, analysisTotal - tasks.length)}/>
-        <p>已完成 {Math.max(0, analysisTotal - tasks.length)} / {Math.max(analysisTotal, tasks.length)} 项{failed.length ? ` · 失败 ${failed.length} 项` : ''}</p>
-        {!settings.paused && tasks.some(t => t.status === 'running' && t.attempts > 1) && <p>响应超时，正在进行第 {Math.max(...tasks.filter(t => t.status === 'running').map(t => t.attempts)) - 1} / 3 次重试</p>}
-        <small>每完成一批更新进度；关闭侧边栏后仍可继续。</small>
-      </div>}
-      {failed.length > 0 && <div className="warning-card"><AlertCircle size={17}/><div>{failed.length} 项分析失败<p>{failed[0]?.error}</p><button className="text-button" onClick={() => void run('retry', async () => { await rpc({ type: 'RETRY' }); })}>重试失败项</button></div></div>}
-      {page === 'home' && <>
-        <div className="section-heading"><h1>{query ? '搜索结果' : tag ? `标签 · ${tag}` : category !== null ? category || '未分类' : '最近收藏'}</h1><button className="text-button" onClick={() => nav('home')}>全部</button></div>
-        {!ready && <div className="empty" role="status">正在读取 Chrome 书签…</div>}
-
-
-        {configured && unclassified.length > 0 && !remaining.length && !drafts.length && !failed.length && <button className="suggestion-banner" disabled={!!busy} onClick={() => void run('analyze', async () => { await rpc({ type: 'ANALYZE' }); setNotice('已开始生成建议，完成后在「待确认」检查'); })}><Sparkles size={17}/><span>为未分类书签生成建议</span><ChevronRight size={16}/></button>}
-        {groupBookmarksByDate(filtered).map(group => <section className="date-group" key={group.label}><h2>{group.label}</h2><div className="bookmark-list">{group.bookmarks.map(b => <BookmarkRow key={b.id} bookmark={b} onOpen={() => void run('open', async () => { await open(b); })} onDetails={() => details(b)}/>)}</div></section>)}
-        {ready && !filtered.length && <div className="empty"><BookmarkIcon size={29}/><h3>{query ? '没有找到匹配的书签' : '这里还没有书签'}</h3><p>{query ? '换个标题、域名或分类试试。' : '打开网页，点击上方「收藏」。'}</p></div>}
-      </>}
+    {page === 'home' ? <LibraryPanel bookmarks={filtered} totalCount={bookmarks.length} pendingCount={bookmarks.filter(b => b.readingState === 'later' || b.readingState === 'reading').length} readCount={bookmarks.filter(b => b.readingState === 'read').length}
+      query={query} category={category} tag={tag} scope={scope} readingFilter={readingFilter} searchState={searchState} categories={settings.categories} availableTags={tags} busy={!!busy} ready={ready} run={run} notify={setNotice}
+      onScopeChange={setScope} onReadingFilterChange={setReadingFilter} onShowAll={() => { filterCategory(null); filterTag(''); }} onDetails={details} onReadingMenu={bookmark => setReadingId(bookmark.id)}
+      onOpen={bookmark => void run('open', () => open(bookmark))} onReadMatch={(bookmark, terms) => void run('reader', () => readBookmark(bookmark, terms))}
+      onRefresh={() => void run('sync', async () => { await rpc({ type: 'SYNC' }); setNotice('书签已刷新'); })}>
+      {analysisStatus}
+      {configured && unclassified.length > 0 && !remaining.length && !drafts.length && !failed.length && <button className="suggestion-banner" disabled={!!busy} onClick={() => void run('analyze', async () => { await rpc({ type: 'ANALYZE' }); setNotice('已开始生成建议，完成后在「待确认」检查'); })}><Sparkles size={17}/><span>为未分类书签生成建议</span><ChevronRight size={16}/></button>}
+    </LibraryPanel> : page === 'reader' && selected && snapshot ? <Suspense fallback={<main className="empty" role="status">正在加载正文…</main>}><Reader bookmark={selected} snapshot={snapshot} matchTerms={matchTerms} busy={!!busy} run={run} notify={setNotice}/></Suspense>
+      : <motion.main key={page} className="page-stage" initial={{ opacity: 0, y: reducedMotion ? 0 : 6 }} animate={{ opacity: 1, y: 0 }} transition={{ duration: 0.18, ease: 'easeOut' }}>
+      {analysisStatus}
       {page === 'categories' && <>
         <div className="section-heading"><h1>我的分类</h1><button className="text-button" onClick={() => setPage('settings')}>编辑</button></div>
         <div className="category-list">{counts.map(([name, count]) => <button key={name} onClick={() => { filterCategory(name); setPage('home'); }}><Folder size={26} strokeWidth={1.5}/><strong>{name}</strong><span>{count}</span><ChevronRight size={16}/></button>)}</div>
@@ -196,18 +222,13 @@ export function App() {
         const { importBackup } = await import('./backup');
         const result = await importBackup(input);
         updateSettings(result.settings);
-        setNotice(result.settingsRestored
-          ? `已恢复 ${result.restored} 项，跳过 ${result.skipped} 项；模型配置和 ${result.categoryCount} 个分类已恢复`
-          : `已恢复 ${result.restored} 项，跳过 ${result.skipped} 项；旧版备份已补回 ${result.categoryCount} 个分类`);
+        setNotice(`已恢复 ${result.restored} 项，跳过 ${result.skipped} 项；模型配置、阅读安排和 ${result.categoryCount} 个分类已恢复`);
       })}/></Suspense>}
-      {page === 'detail' && selected && <Detail key={selected.id} bookmark={selected} snapshot={snapshot} categories={settings.categories} busy={!!busy} configured={configured} run={run} notify={setNotice} onReader={() => setPage('reader')} onOpen={() => void run('open', () => open(selected))} onDeleted={() => setPage('home')}/>}
-      {page === 'reader' && selected && snapshot && <Suspense fallback={<div className="empty" role="status">正在加载正文…</div>}><Reader bookmark={selected} snapshot={snapshot}/></Suspense>}
+      {page === 'detail' && selected && <Detail key={selected.id} bookmark={selected} snapshot={snapshot} categories={settings.categories} availableTags={tags} busy={!!busy} configured={configured} run={run} notify={setNotice} onReading={() => setReadingId(selected.id)} onReader={() => void run('reader', () => readBookmark(selected))} onOpen={() => void run('open', () => open(selected))} onDeleted={() => setPage('home')}/>}
+      {page === 'reader' && selected && !snapshot && <div className="empty">该书签尚未保存正文快照<button className="text-button" onClick={() => setPage('detail')}>返回详情</button></div>}
       {['detail', 'reader'].includes(page) && !selected && <div className="empty">该书签已被删除<button className="text-button" onClick={() => setPage('home')}>返回收藏</button></div>}
-    </motion.main>
-    {tabPages && <footer>{page === 'home' ? <><span>{bookmarks.length} 个书签</span><button className="icon-button" aria-label="刷新书签" disabled={!!busy} onClick={() => void run('sync', async () => { await rpc({ type: 'SYNC' }); setNotice('书签已刷新'); })}><RefreshCw size={19}/></button></> : page === 'categories' ? <><Folder size={18}/><span>{counts.length} 个分类</span></> : <span>{drafts.length > 1 ? `还有 ${drafts.length - 1} 条建议` : drafts.length ? '1 条建议待确认' : '所有建议已处理'}</span>}</footer>}
+    </motion.main>}
+    {tabPages && page !== 'home' && <footer>{page === 'categories' ? <><Folder size={18}/><span>{counts.length} 个分类</span></> : <span>{drafts.length > 1 ? `还有 ${drafts.length - 1} 条建议` : drafts.length ? '1 条建议待确认' : '所有建议已处理'}</span>}</footer>}
+    {readingBookmark && <ReadingMenu bookmark={readingBookmark} snapshot={readingSnapshot} busy={!!busy} run={run} notify={setNotice} onClose={() => setReadingId('')} onReader={() => void run('reader', () => readBookmark(readingBookmark))}/>}
   </div>;
-}
-
-function BookmarkRow({ bookmark: b, onOpen, onDetails }: { bookmark: Bookmark; onOpen: () => void; onDetails: () => void }) {
-  return <article className={`bookmark-row ${b.linkState === 'unavailable' ? 'is-unavailable' : ''}`}><button className="bookmark-main" onClick={onOpen} title={b.url}><SiteIcon url={b.url}/><span className="bookmark-copy"><strong>{b.title}</strong><span>{hostname(b.url)}</span>{b.linkState === 'unavailable' && <small className="danger-text">原网页可能已失效</small>}</span></button><span className="row-category">{b.category}</span><button className="icon-button item-menu" onClick={onDetails} aria-label={`查看 ${b.title} 的详情`}><MoreHorizontal size={18}/></button></article>;
 }

@@ -1,0 +1,72 @@
+.library-scopes, .reading-filters { display: flex; align-items: center; flex-wrap: wrap; gap: 6px; margin: -2px 0 18px; }
+.scope-button { padding: 6px 11px; border: 1px solid transparent; border-radius: 7px; color: var(--muted); background: transparent; font-size: 13px; }
+.scope-button[aria-pressed="true"] { color: var(--accent); background: var(--accent-soft); }
+.clear-filter { margin-left: auto; font-size: 12px; }
+.reading-filters { margin-top: -3px; margin-bottom: 14px; }
+.result-count { display: inline-block; margin-left: 7px; color: var(--muted); font-size: 12px; font-weight: 400; letter-spacing: 0; }
+.search-coverage { display: flex; align-items: center; gap: 6px; margin: -4px 0 16px; color: var(--muted); font-size: 11px; line-height: 1.7; }
+.select-current { display: flex; align-items: center; gap: 7px; padding: 4px 0 13px; color: var(--muted); font-size: 12px; }
+.select-current > span { margin-left: auto; }
+.select-current input, .row-check { width: 17px; height: 17px; margin: 0; flex-shrink: 0; accent-color: var(--accent); }
+.row-check { margin-right: 5px; }
+.bookmark-row.is-selected { background: var(--accent-soft); border-radius: 7px; }
+.bookmark-row .reading-action { min-width: 28px; width: 28px; padding: 5px; }
+.reading-action.is-active, .bookmark-copy .reading-hint { color: var(--accent); }
+.bookmark-copy .reading-hint { font-size: 11px; }
+.library-main .row-category { max-width: 56px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 12px; }
+.library-main .bookmark-main { gap: 12px; }
+.library-main .bookmark-row { gap: 4px; }
+.library-footer.is-organizing { min-height: 68px; margin: 0; padding: 12px 18px; justify-content: space-between; background: var(--paper); }
+.library-footer .button { padding: 9px 14px; }
+.search-result { padding-bottom: 13px; border-bottom: 1px solid var(--line); }
+.search-result .bookmark-row { border-bottom: 0; }
+.search-tags { display: flex; flex-wrap: wrap; gap: 5px; margin: 0 0 8px 51px; }
+.search-tags > span { max-width: 100%; padding: 2px 6px; border-radius: 4px; color: var(--muted); background: var(--surface-muted); font-size: 11px; overflow-wrap: anywhere; }
+.match-snippet { display: block; width: 100%; padding: 8px 10px; border: 1px solid var(--line); border-radius: 8px; color: var(--muted); background: var(--paper); text-align: left; font-size: 12px; line-height: 1.9; overflow-wrap: anywhere; }
+.match-label { display: flex; align-items: center; gap: 5px; margin-bottom: 4px; color: var(--accent); font-size: 11px; }
+.match-snippet mark, .reader-content mark[data-reader-match] { padding: 0 1px; border-radius: 2px; color: var(--ink); background: #fff0ad; }
+:root[data-theme="dark"] .match-snippet mark, :root[data-theme="dark"] .reader-content mark[data-reader-match] { background: #665120; }
+.tag-editor { margin-bottom: 12px; }
+.tag-editor > .row-between { margin-bottom: 8px; font-size: 12px; font-weight: 600; }
+.tag-editor .row-between small { color: var(--muted); font-size: 11px; font-weight: 400; }
+.tag-editor-input { padding: 8px 9px; border: 1px solid var(--line-strong); border-radius: 9px; background: var(--paper); }
+.tag-editor-input:focus-within { border-color: var(--accent); }
+.tag-editor .tag-list { margin: 0; }
+.tag-editor .tag-list > span { display: inline-flex; align-items: center; gap: 5px; padding: 4px 7px; border: 0; border-radius: 5px; color: var(--accent); background: var(--accent-soft); font-size: 12px; }
+.tag-editor .tag-list span > button { display: inline-flex; align-items: center; justify-content: center; padding: 2px; border: 0; border-radius: 3px; color: inherit; background: transparent; }
+.tag-editor-input > input { display: block; width: 100%; min-width: 0; margin-top: 6px; padding: 5px 1px 1px; border: 0; color: var(--ink); background: transparent; font-size: 14px; }
+.tag-suggestions { display: flex; align-items: center; flex-wrap: wrap; gap: 6px; margin-top: 8px; color: var(--muted); font-size: 11px; }
+.tag-suggestions > button { max-width: 100%; padding: 3px 6px; border: 1px solid var(--line); border-radius: 5px; color: var(--muted); background: transparent; font-size: 11px; overflow-wrap: anywhere; }
+.field-error { margin: 9px 0; color: var(--danger); font-size: 12px; line-height: 1.7; overflow-wrap: anywhere; }
+.manual-note { margin: 10px 0 16px; }
+.reading-status { display: flex; align-items: center; gap: 6px; margin-bottom: 16px; color: var(--accent); font-size: 12px; }
+.detail section > .reading-status { color: var(--accent); }
+dialog.editor-modal { position: fixed; top: auto; right: 0; bottom: 0; left: 0; width: 100%; max-width: 560px; max-height: calc(100dvh - 30px); margin: 0 auto; padding: 20px 18px; overflow-y: auto; overscroll-behavior: contain; border: 1px solid var(--line-strong); border-bottom: 0; border-radius: 16px 16px 0 0; color: var(--ink); background: var(--paper); box-shadow: 0 -8px 28px #00000026; }
+dialog.editor-modal::backdrop { background: #10131a45; }
+:root[data-theme="dark"] dialog.editor-modal::backdrop { background: #00000080; }
+.modal-heading { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-bottom: 7px; }
+.modal-heading h2 { font-size: 18px; }
+.modal-description { margin-bottom: 20px; color: var(--muted); font-size: 12px; line-height: 1.7; overflow-wrap: anywhere; }
+.bulk-fields > label { display: block; margin-top: 17px; color: var(--ink); font-size: 12px; font-weight: 600; }
+.bulk-fields > label > select { display: block; width: 100%; min-width: 0; margin-top: 7px; padding: 10px 11px; border: 1px solid var(--line-strong); border-radius: 8px; color: var(--ink); background: var(--paper); font-size: 14px; font-weight: 400; }
+.bulk-fields .tag-editor { margin-top: 14px; }
+.bulk-preview { margin: 18px 0; padding: 10px 11px; border: 1px solid var(--line); border-radius: 8px; color: var(--muted); background: var(--canvas); font-size: 12px; line-height: 1.8; overflow-wrap: anywhere; }
+.modal-actions { margin-top: 14px; padding: 12px 0 8px; background: var(--paper); }
+.reading-primary { margin: 6px 0 14px; }
+.reading-remove { margin-top: 14px; font-size: 12px; }
+.reader-footer { min-height: 68px; padding: 12px 0 18px; justify-content: space-between; flex-wrap: wrap; }
+.reader-footer .text-button { display: inline-flex; align-items: center; gap: 5px; font-size: 13px; }
+.reader-footer .field-error { flex-basis: 100%; margin-bottom: 0; }
+@media (max-width: 360px) {
+  .library-main .row-category { max-width: 40px; font-size: 11px; }
+  .library-main .bookmark-main { gap: 8px; }
+  .library-main .site-icon { width: 34px; height: 36px; }
+  .library-main .item-menu { min-width: 28px; width: 28px; padding: 4px; }
+  .search-tags { margin-left: 42px; }
+  .tag-editor-input > input, .bulk-fields > label > select { font-size: 16px; }
+}
+@media (pointer: coarse) {
+  .scope-button, .reading-action, .tag-suggestions > button { min-height: 44px; }
+  .row-check, .select-current input { width: 20px; height: 20px; }
+  .tag-editor .tag-list span > button { min-width: 28px; min-height: 28px; }
+}

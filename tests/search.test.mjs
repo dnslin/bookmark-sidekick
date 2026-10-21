@@ -1,49 +1,181 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import Fuse from 'fuse.js';
-import { filterBookmarks } from '../src/library.ts';
+import * as domain from '../src/domain.ts';
 import { loadModule } from './helpers/load-module.mjs';
 
-const rows = [
-  { id: 'a', title: 'React 文档', url: 'https://react.dev', category: '开发', tags: ['前端'], summary: '用户界面教程' },
-  { id: 'b', title: '界面设计', url: 'https://example.com/design', category: '设计', tags: ['前端'], summary: 'React 组件设计' },
-  { id: 'c', title: 'TypeScript 文档', url: 'https://typescriptlang.org', category: '', tags: ['类型'], summary: '开发工具' },
-];
-const options = { keys: [{ name: 'title', weight: 3 }, 'url', 'category', 'tags', 'summary'], threshold: 0.36, ignoreLocation: true };
-const load = dependencies => loadModule(new URL('../src/search.ts', import.meta.url), dependencies);
-
-test('搜索保留原有匹配、排序、分类和标签筛选结果', () => {
-  const { createBookmarkSearch } = load({ 'fuse.js': { default: Fuse } });
-  for (const [category, tag] of [[null, ''], ['开发', ''], [null, '前端'], ['', '类型']]) {
-    const scoped = filterBookmarks(rows, category, tag);
-    const search = createBookmarkSearch(scoped);
-    for (const query of ['', '  ', ' React ', '前端', '开发', 'not-found']) {
-      const expected = query.trim() ? new Fuse(scoped, options).search(query.trim()).map(result => result.item) : scoped;
-      assert.deepEqual(search(query), expected);
-    }
-  }
+const load = (FuseClass = Fuse) => loadModule(new URL('../src/search.ts', import.meta.url), {
+  'fuse.js': { default: FuseClass }, './domain': domain,
 });
+const bookmark = (id, extra = {}) => ({
+  id, title: `Article ${id}`, url: `https://example.com/${id}`, category: '文章', tags: [], summary: '', addedAt: 100, ...extra,
+});
+const snapshot = (id, text, extra = {}) => ({bookmarkId: id, url: `https://example.com/${id}`, text, capturedAt: 100, ...extra});
+const ids = result => result.hits.map(hit => hit.bookmarkId);
 
-test('同一集合的连续查询只建一次索引，空查询不建索引', () => {
+test('空查询不创建 Fuse 索引，搜索结果用书签 ID 返回', () => {
   let indexes = 0;
-  class CountingFuse extends Fuse {
-    constructor(...args) { super(...args); indexes++; }
-  }
-  const { createBookmarkSearch } = load({ 'fuse.js': { default: CountingFuse } });
-  const search = createBookmarkSearch(rows);
-  assert.deepEqual(search(' '), rows);
+  class CountingFuse extends Fuse { constructor(...args) { super(...args); indexes++; } }
+  const {createLibrarySearch} = load(CountingFuse);
+  const index = createLibrarySearch([bookmark('a', {title:'React 文档'})]);
+  assert.deepEqual(index.search(' ').hits, []);
   assert.equal(indexes, 0);
-  assert.equal(search('React')[0].id, 'a');
-  assert.equal(search('TypeScript')[0].id, 'c');
-  search('界面');
-  assert.equal(indexes, 1);
+  assert.deepEqual(ids(index.search('React')), ['a']);
+  const first = indexes;
+  index.search('文档');
+  assert.equal(indexes, first);
 });
 
-test('替换集合后新索引包含新增和修改的数据', () => {
-  const { createBookmarkSearch } = load({ 'fuse.js': { default: Fuse } });
-  const original = createBookmarkSearch(rows);
-  assert.equal(original('Rust').length, 0);
-  const changed = createBookmarkSearch([{ ...rows[0], title: 'Rust 文档' }]);
-  assert.equal(changed('Rust')[0].id, 'a');
-  assert.equal(changed('TypeScript').length, 0);
+test('中文分词和多词 AND 可跨标题、标签与正文，英文不区分大小写', () => {
+  const {createLibrarySearch} = load();
+  const index = createLibrarySearch([
+    bookmark('a', {title:'内存管理', tags:['Go']}),
+    bookmark('b', {title:'内存管理'}),
+    bookmark('c', {title:'Go 并发'}),
+  ], [snapshot('a', '追踪 goroutine 泄漏与资源释放。'), snapshot('b', '只介绍内存分配。'), snapshot('c','追踪协程泄漏。')]);
+  assert.deepEqual(ids(index.search('内存 泄漏')), ['a']);
+  assert.deepEqual(ids(index.search('GO GOROUTINE')), ['a']);
+  assert.deepEqual(ids(index.search('内存 泄漏 不存在')), []);
+  assert.ok(index.search('内存泄漏').terms.length >= 2);
+});
+
+test('保留元数据模糊匹配，但正文不接受拼写错误', () => {
+  const {createLibrarySearch} = load();
+  const index = createLibrarySearch([bookmark('a', {title:'React documentation'}), bookmark('b')], [snapshot('b', 'React documentation')]);
+  assert.deepEqual(ids(index.search('Ract')), ['a']);
+  assert.deepEqual(ids(index.search('React')), ['a', 'b']);
+});
+
+test('标题与标签命中优先，其次其他元数据，再次仅正文；相同相关度按收藏倒序', () => {
+  const {createLibrarySearch} = load();
+  const index = createLibrarySearch([
+    bookmark('body', {addedAt: 900}),
+    bookmark('summary', {summary:'quartz', addedAt:800}),
+    bookmark('old', {title:'quartz', addedAt:100}),
+    bookmark('new', {title:'quartz', addedAt:200}),
+    bookmark('tag', {tags:['quartz'], addedAt:300}),
+  ], [snapshot('body','quartz')]);
+  const result = ids(index.search('quartz'));
+  assert.deepEqual(new Set(result.slice(0,3)), new Set(['old','new','tag']));
+  assert.ok(result.indexOf('new') < result.indexOf('old'));
+  assert.deepEqual(result.slice(3), ['summary','body']);
+});
+
+test('同一书签多字段多词命中只出现一次，正文片段和半开区间来自原文', () => {
+  const {createLibrarySearch} = load();
+  const text = 'React 介绍状态。状态更新之后，React 会重新渲染界面。';
+  const index = createLibrarySearch([bookmark('a',{title:'React',tags:['React']})],[snapshot('a',text)]);
+  const result = index.search('React 状态');
+  assert.deepEqual(ids(result), ['a']);
+  const snippet = result.hits[0].snippet;
+  assert.ok(snippet);
+  assert.ok(snippet.text.includes('React'));
+  assert.ok(snippet.ranges.length);
+  for (let i = 0; i < snippet.ranges.length; i++) {
+    const [start,end] = snippet.ranges[i];
+    assert.ok(start >= 0 && end > start && end <= snippet.text.length);
+    assert.ok(['react','状态'].includes(snippet.text.slice(start,end).toLowerCase()));
+    if (i) assert.ok(snippet.ranges[i-1][1] < start);
+  }
+});
+
+test('五十万字符正文末尾可以命中，片段保留命中文本且不切坏表情', () => {
+  const {createLibrarySearch} = load();
+  const text = '填充内容'.repeat(124980) + '🙂 这段文字记录 goroutine 泄漏的排查结果。';
+  assert.ok(text.length > 499900);
+  const index = createLibrarySearch([bookmark('a')], [snapshot('a',text)]);
+  const {hits} = index.search('goroutine 泄漏');
+  assert.equal(hits.length,1);
+  assert.ok(hits[0].snippet.text.includes('goroutine'));
+  assert.ok(hits[0].snippet.text.includes('泄漏'));
+  assert.ok(hits[0].snippet.text.length <= 120);
+  assert.ok(!hits[0].snippet.text.includes('\uFFFD'));
+});
+
+test('四十万字符中重复短词仍返回完整命中与有界片段', () => {
+  const {createLibrarySearch} = load();
+  for (const [term, text] of [['a', 'a '.repeat(200000)], ['的', '的'.repeat(400000)]]) {
+    const index = createLibrarySearch([bookmark('a'), bookmark('b')], [snapshot('a', text), snapshot('b', '普通正文')]);
+    const result = index.search(term);
+    assert.ok(ids(result).includes('a'));
+    const excerpt = result.hits.find(hit => hit.bookmarkId === 'a').snippet;
+    assert.ok(excerpt.text.length <= 120);
+    const marked = excerpt.ranges.map(([start, end]) => excerpt.text.slice(start, end));
+    assert.ok(marked.join('').length > term.length);
+    assert.ok(marked.every(value => value.replaceAll(term, '') === ''));
+    assert.equal(result.snapshotCount, 2);
+  }
+});
+
+test('大小写转换扩展字符后，片段范围仍指向原文而不是转换后的偏移', () => {
+  const {createLibrarySearch} = load();
+  for (const text of ['İ quartz end', 'İ'.repeat(80) + '🙂 最后 quartz 与泄漏。', 'İ 正文填充。'.repeat(71430).slice(0, 499970) + '🙂 最后 quartz 与泄漏。']) {
+    const index = createLibrarySearch([bookmark('a')], [snapshot('a', text)]);
+    const excerpt = index.search('quartz').hits[0].snippet;
+    assert.ok(excerpt.text.includes('quartz'));
+    assert.ok(excerpt.text.length <= 120);
+    assert.equal(excerpt.text.isWellFormed(), true);
+    assert.deepEqual(excerpt.ranges.map(([start, end]) => excerpt.text.slice(start, end)), ['quartz']);
+  }
+  const index = createLibrarySearch([bookmark('a')], [snapshot('a', 'İstanbul')]);
+  const excerpt = index.search('i').hits[0].snippet;
+  assert.deepEqual(excerpt.ranges.map(([start, end]) => excerpt.text.slice(start, end)), ['İ']);
+});
+
+test('片段两端不切断 UTF16 表情字符，超长词的高亮仍在展示范围内', () => {
+  const {createLibrarySearch} = load();
+  const text = 'x'.repeat(50) + '🙂' + 'x'.repeat(35) + 'quartz' + 'x'.repeat(67) + '🙂' + 'x'.repeat(50);
+  const index = createLibrarySearch([bookmark('a')], [snapshot('a', text)]);
+  const excerpt = index.search('quartz').hits[0].snippet;
+  assert.equal(excerpt.text.isWellFormed(), true);
+  assert.ok(excerpt.text.length <= 120);
+  assert.deepEqual(excerpt.ranges.map(([start, end]) => excerpt.text.slice(start, end)), ['quartz']);
+  const longTerm = 'x'.repeat(200);
+  const longIndex = createLibrarySearch([bookmark('a')], [snapshot('a', `before ${longTerm} after`)]);
+  const longExcerpt = longIndex.search(longTerm).hits[0].snippet;
+  assert.ok(longExcerpt.ranges.length);
+  assert.ok(longExcerpt.ranges.every(([start, end]) => start >= 0 && end <= longExcerpt.text.length));
+});
+
+test('没有快照仍可搜索元数据；HTML 不进入检索，过期 URL 的正文不命中', () => {
+  const {createLibrarySearch} = load();
+  const index = createLibrarySearch([bookmark('a',{title:'TypeScript'}),bookmark('b'),bookmark('c',{url:'https://example.com/new'})],[
+    snapshot('b','普通正文',{html:'<p>secretword</p>'}), snapshot('c','secretword'),
+  ]);
+  assert.deepEqual(ids(index.search('TypeScript')), ['a']);
+  assert.deepEqual(ids(index.search('secretword')), []);
+  assert.equal(index.search('TypeScript').snapshotCount,1);
+});
+
+test('阅读状态与位置变化不重建索引，快照替换和删除后立即更新结果', () => {
+  let indexes = 0;
+  class CountingFuse extends Fuse { constructor(...args) { super(...args); indexes++; } }
+  const {createLibrarySearch} = load(CountingFuse);
+  const a = bookmark('a'); const body = snapshot('a','quartz');
+  const index = createLibrarySearch([a],[body]);
+  index.search('quartz');
+  const built = indexes;
+  index.setBookmarks([{...a, readingState:'reading'}]);
+  index.setSnapshot({...body, progress:.5});
+  assert.deepEqual(ids(index.search('quartz')), ['a']);
+  assert.equal(indexes,built);
+  index.setSnapshot({...body,text:'zircon',capturedAt:101});
+  assert.deepEqual(ids(index.search('zircon')),['a']);
+  assert.deepEqual(ids(index.search('quartz')),[]);
+  index.removeSnapshot('a');
+  assert.deepEqual(ids(index.search('zircon')),[]);
+});
+
+test('词内直撇号、弯撇号和句点按字面匹配，操作标点不启用表达式语法', () => {
+  const {createLibrarySearch} = load();
+  const index = createLibrarySearch([bookmark('a'),bookmark('b')],[
+    snapshot('a',"can't and don’t lose Node.js state; quartz and zircon"),
+    snapshot('b','can and do not lose nodeXjs state; quartz'),
+  ]);
+  assert.deepEqual(ids(index.search("can't")),['a']);
+  assert.deepEqual(ids(index.search('don’t')),['a']);
+  assert.deepEqual(ids(index.search('node.js')),['a']);
+  assert.deepEqual(ids(index.search('^node.js$')),['a']);
+  assert.deepEqual(ids(index.search('quartz | zircon')),['a']);
+  assert.deepEqual(new Set(ids(index.search('!quartz'))),new Set(['a','b']));
 });

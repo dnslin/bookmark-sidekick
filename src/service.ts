@@ -1,6 +1,6 @@
 import { db } from './db';
-import { applySuggestion, canApply, cleanUrl, classifyStatus, flattenBookmarks, isClaimable, isWebUrl, mergeNative, safeError, taskFailure, analysisTotal, withTimeoutRetries } from './domain';
-import type { Bookmark, Snapshot, Suggestion, Task } from './domain';
+import { applySuggestion, canApply, cleanUrl, classifyStatus, flattenBookmarks, isClaimable, isWebUrl, mergeNative, normalizeTags, safeError, taskFailure, analysisTotal, withTimeoutRetries } from './domain';
+import type { Bookmark, BookmarkEdits, BulkEdits, ReadingState, Snapshot, Suggestion, Task } from './domain';
 import { getSettings, isConfigured, setSettings } from './settings';
 import { classify } from './llm';
 import type { Message } from './messages';
@@ -200,14 +200,109 @@ async function saveBookmark(input: Extract<Message, { type: 'SAVE' }>) {
   }
   if (!record) throw new Error('无法读取已创建的书签，请重试');
   if (input.snapshot && cleanUrl(input.snapshot.url) === url) {
-    const snapshot: Snapshot = {
-      bookmarkId: record.id, url: input.snapshot.url, capturedAt: Date.now(),
-      html: input.snapshot.html.slice(0, 1_000_000), text: input.snapshot.text.slice(0, 500_000),
-    };
-    await db.snapshots.put(snapshot);
+    const captured = input.snapshot;
+    const id = record.id;
+    await db.transaction('rw', db.snapshots, async () => {
+      const previous = await db.snapshots.get(id);
+      const snapshot: Snapshot = {
+        bookmarkId: id, url: captured.url, capturedAt: Math.max(Date.now(), (previous?.capturedAt ?? 0) + 1),
+        html: captured.html.slice(0, 1_000_000), text: captured.text.slice(0, 500_000), progress: 0,
+      };
+      await db.snapshots.put(snapshot);
+    });
   }
   if (!record.manual && (!existed || !record.category) && isConfigured(await getSettings())) await enqueue([record.id], 'auto');
   return { id: record.id, existed };
+}
+
+function readingState(current: ReadingState, requested: ReadingState): ReadingState {
+  if (requested === 'later' && current === 'reading') return current;
+  if (requested === 'reading' && current !== 'later') return current;
+  return requested;
+}
+
+async function updateReading(id: string, requested: ReadingState): Promise<void> {
+  await db.transaction('rw', db.bookmarks, db.snapshots, async () => {
+    const bookmark = await db.bookmarks.get(id);
+    if (!bookmark) throw new Error('书签已被删除');
+    const state = readingState(bookmark.readingState, requested);
+    await db.bookmarks.update(id, { readingState: state });
+    if (bookmark.readingState === 'read' && state === 'later') await db.snapshots.update(id, { progress: 0 });
+  });
+}
+
+async function editBookmark(id: string, changes: BookmarkEdits) {
+  if (changes.category !== undefined && !(await getSettings()).categories.includes(changes.category)) throw new Error('分类不存在');
+  const tags = changes.tags === undefined ? undefined : normalizeTags(changes.tags);
+  const title = changes.title?.trim().slice(0, 1000);
+  if (title === '') throw new Error('书签标题不能为空');
+  if (title !== undefined) await chrome.bookmarks.update(id, { title });
+  try {
+    await syncBookmarks();
+    await db.transaction('rw', db.bookmarks, db.tasks, db.drafts, async () => {
+      const bookmark = await db.bookmarks.get(id);
+      if (!bookmark) throw new Error('书签已被删除');
+      if (title === undefined && changes.category === undefined && tags === undefined) return;
+      await db.bookmarks.update(id, {
+        ...(changes.category !== undefined ? { category: changes.category } : {}),
+        ...(tags !== undefined ? { tags } : {}),
+        manual: true, revision: bookmark.revision + 1,
+      });
+      await db.tasks.delete(id);
+      await db.drafts.delete(id);
+    });
+  } catch (error) {
+    if (title !== undefined) throw new Error('标题已更新，本地整理数据保存失败，请重试', { cause: error });
+    throw error;
+  }
+  return true;
+}
+
+async function bulkEdit(ids: string[], changes: BulkEdits) {
+  if (changes.category !== undefined && !(await getSettings()).categories.includes(changes.category)) throw new Error('分类不存在');
+  const values = changes.tags ? normalizeTags(changes.tags.values) : undefined;
+  const uniqueIds = [...new Set(ids)];
+  const manual = changes.category !== undefined || changes.tags !== undefined;
+  await syncBookmarks();
+  let applied = 0;
+  await db.transaction('rw', db.bookmarks, db.drafts, db.tasks, db.snapshots, async () => {
+    const records = (await db.bookmarks.bulkGet(uniqueIds)).filter((bookmark): bookmark is Bookmark => !!bookmark);
+    // Validate all merged tags before the first write so one over-limit row cannot partly apply the batch.
+    const planned = records.map(bookmark => {
+      let tags = bookmark.tags;
+      if (changes.tags?.operation === 'add') tags = normalizeTags([...tags, ...values!]);
+      if (changes.tags?.operation === 'remove') {
+        const removed = new Set(values!.map(tag => tag.toLowerCase()));
+        tags = tags.filter(tag => !removed.has(tag.toLowerCase()));
+      }
+      return { bookmark, tags, state: changes.readingState === undefined ? bookmark.readingState : readingState(bookmark.readingState, changes.readingState) };
+    });
+    for (const { bookmark, tags, state } of planned) {
+      await db.bookmarks.update(bookmark.id, {
+        ...(changes.category !== undefined ? { category: changes.category } : {}),
+        ...(changes.tags !== undefined ? { tags } : {}),
+        ...(changes.readingState !== undefined ? { readingState: state } : {}),
+        ...(manual ? { manual: true, revision: bookmark.revision + 1 } : {}),
+      });
+      if (manual) {
+        await db.drafts.delete(bookmark.id);
+        await db.tasks.delete(bookmark.id);
+      }
+      if (bookmark.readingState === 'read' && state === 'later') await db.snapshots.update(bookmark.id, { progress: 0 });
+      applied++;
+    }
+  });
+  return { applied, skipped: uniqueIds.length - applied };
+}
+
+async function saveProgress(id: string, capturedAt: number, progress: number): Promise<boolean> {
+  if (!Number.isFinite(progress) || progress < 0 || progress > 1) throw new Error('阅读位置必须在 0 与 1 之间');
+  return db.transaction('rw', db.snapshots, async () => {
+    const snapshot = await db.snapshots.get(id);
+    if (!snapshot || snapshot.capturedAt !== capturedAt) return false;
+    await db.snapshots.update(id, { progress });
+    return true;
+  });
 }
 
 async function checkLink(id: string) {
@@ -253,7 +348,7 @@ export async function handleMessage(message: Message): Promise<unknown> {
       const settings = await getSettings();
       if (!isConfigured(settings)) throw new Error('请先保存模型设置并允许发送书签信息');
       try {
-        await withTimeoutRetries(() => classify(settings, [{ id: 'connection-test', title: 'Go programming documentation', url: 'https://go.dev/doc/', folder: '', addedAt: 0, revision: 1, category: '', tags: [], summary: '', manual: false, linkState: 'unknown' }]));
+        await withTimeoutRetries(() => classify(settings, [{ id: 'connection-test', title: 'Go programming documentation', url: 'https://go.dev/doc/', folder: '', addedAt: 0, revision: 1, category: '', tags: [], summary: '', manual: false, linkState: 'unknown', readingState: 'none' }]));
       } catch (e) { throw new Error(safeError(e)); }
       return true;
     }
@@ -264,18 +359,10 @@ export async function handleMessage(message: Message): Promise<unknown> {
       return true;
     }
     case 'SAVE': return saveBookmark(message);
-    case 'EDIT': {
-      if (!(await getSettings()).categories.includes(message.category)) throw new Error('分类不存在');
-      await chrome.bookmarks.update(message.id, { title: message.title.trim().slice(0, 1000) });
-      await syncBookmarks();
-      await db.transaction('rw', db.bookmarks, db.tasks, db.drafts, async () => {
-        const b = await db.bookmarks.get(message.id);
-        if (!b) throw new Error('书签已被删除');
-        await db.bookmarks.update(message.id, { category: message.category, manual: true, revision: b.revision + 1 });
-        await db.tasks.delete(message.id); await db.drafts.delete(message.id);
-      });
-      return true;
-    }
+    case 'EDIT': return editBookmark(message.id, message.changes);
+    case 'BULK_EDIT': return bulkEdit(message.ids, message.changes);
+    case 'SET_READING': await updateReading(message.id, message.state); return true;
+    case 'SAVE_PROGRESS': return saveProgress(message.id, message.capturedAt, message.progress);
     case 'DELETE': await chrome.bookmarks.remove(message.id); await syncBookmarks(); return true;
     case 'CHECK': return checkLink(message.id);
     default: throw new Error('未知操作');

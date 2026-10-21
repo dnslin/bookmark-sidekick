@@ -4,6 +4,7 @@ import ReactDOM from 'react-dom/client';
 import { App } from '../../src/App';
 import './style.css';
 import './restore.css';
+import './library.css';
 
 class ErrorBoundary extends React.Component<{ children: React.ReactNode }, { failed: boolean }> {
   override state = { failed: false };

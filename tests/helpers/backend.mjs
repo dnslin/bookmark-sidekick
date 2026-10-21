@@ -5,7 +5,7 @@ const copy = value => value === undefined ? undefined : structuredClone(value);
 const servicePath = new URL('../../src/service.ts', import.meta.url);
 
 export function createBackend({ native = [], bookmarks = [], drafts = [], tasks = [], snapshots = [], classify, getTree, path = servicePath } = {}) {
-  const metrics = { trees: 0, bookmarkWrites: 0, bulkPuts: 0, fullTaskReads: 0, taskRowsRead: 0, indexedTaskReads: 0 };
+  const metrics = { trees: 0, bookmarkWrites: 0, bulkPuts: 0, fullTaskReads: 0, taskRowsRead: 0, indexedTaskReads: 0, nativeUpdates: 0 };
   function table(name, key, records) {
     const rows = new Map(records.map(row => [row[key], copy(row)]));
     const ordered = () => [...rows.values()].sort((a, b) => String(a[key]).localeCompare(String(b[key])));
@@ -84,6 +84,20 @@ export function createBackend({ native = [], bookmarks = [], drafts = [], tasks 
     bookmarks: {
       onCreated: event(), onChanged: event(), onMoved: event(), onRemoved: event(), onImportBegan: event(), onImportEnded: event(),
       async getTree() { metrics.trees++; return getTree ? getTree(copy(native), metrics.trees) : copy(native); },
+      async update(id, changes) {
+        const find = nodes => {
+          for (const node of nodes) {
+            if (node.id === id) return node;
+            const child = node.children && find(node.children);
+            if (child) return child;
+          }
+        };
+        const node = find(native);
+        if (!node) throw new Error('原生书签已被删除');
+        metrics.nativeUpdates++;
+        Object.assign(node, changes);
+        return copy(node);
+      },
     },
     storage: { local: {
       async get(key) { return { [key]: copy(storage[key]) }; },
