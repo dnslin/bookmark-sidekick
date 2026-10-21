@@ -100,29 +100,29 @@
 
 真实 Chrome 截图：
 
-- [扩展已加载](/Volumes/data/project/bookmark-sidekick/docs/library-chrome-loaded.png)
-- [原生权限弹窗](/Volumes/data/project/bookmark-sidekick/docs/library-chrome-permission.png)
-- [批量修改三条书签](/Volumes/data/project/bookmark-sidekick/docs/library-chrome-bulk.png)
-- [正文末尾搜索结果](/Volumes/data/project/bookmark-sidekick/docs/library-chrome-search.png)
-- [真实滚动至 43%](/Volumes/data/project/bookmark-sidekick/docs/library-chrome-reader-progress.png)
-- [后台停止后的 43% 恢复](/Volumes/data/project/bookmark-sidekick/docs/library-chrome-reader-restored.png)
-- [后台 STOPPED](/Volumes/data/project/bookmark-sidekick/docs/library-chrome-worker-stopped.png)
-- [后台再次 RUNNING 与已读成功](/Volumes/data/project/bookmark-sidekick/docs/library-chrome-worker-restarted.png)
-- [正文末尾定位与高亮](/Volumes/data/project/bookmark-sidekick/docs/library-chrome-search-located.png)
+- [扩展已加载](library-chrome-loaded.png)
+- [原生权限弹窗](library-chrome-permission.png)
+- [批量修改三条书签](library-chrome-bulk.png)
+- [正文末尾搜索结果](library-chrome-search.png)
+- [真实滚动至 43%](library-chrome-reader-progress.png)
+- [后台停止后的 43% 恢复](library-chrome-reader-restored.png)
+- [后台 STOPPED](library-chrome-worker-stopped.png)
+- [后台再次 RUNNING 与已读成功](library-chrome-worker-restarted.png)
+- [正文末尾定位与高亮](library-chrome-search-located.png)
 
 ## 隔离浏览器截图
 
 截图来自实际 React 界面和隔离示例数据，不是原型，也不是用户个人书签。
 
-- [最近列表](/Volumes/data/project/bookmark-sidekick/docs/library-home.png)
-- [批量修改](/Volumes/data/project/bookmark-sidekick/docs/library-bulk.png)
-- [正文搜索结果](/Volumes/data/project/bookmark-sidekick/docs/library-search.png)
-- [阅读页及位置](/Volumes/data/project/bookmark-sidekick/docs/library-reader.png)
-- [320px 深色长标签表单](/Volumes/data/project/bookmark-sidekick/docs/library-dark-320.png)
+- [最近列表](library-home.png)
+- [批量修改](library-bulk.png)
+- [正文搜索结果](library-search.png)
+- [阅读页及位置](library-reader.png)
+- [320px 深色长标签表单](library-dark-320.png)
 
 ## 验证边界
 
 - 隔离浏览器一节的 Chrome 接口使用测试替身；真实 Chrome 一节使用完整扩展和实际 Chrome API。两组样例均与个人书签库隔离，未访问或修改用户个人 Chrome 书签。
 - 没有连接真实模型；AI 分类的在途修改、手动保护和阅读并发使用隔离自动测试覆盖。
 - 真实扩展加载、原生权限拒绝与允许、扩展重载，以及两种 MV3 后台 Stop 后唤醒场景已验收。本轮没有使用个人书签库，也不将本地样例结果等同于所有外部网站的正文提取效果。
-- 没有推送、创建发布或合并。本次改动保留在本地功能分支上。
+- 本记录覆盖功能与运行验收；推送、CI 和合并状态以关联的 GitHub PR 为准。未创建版本发布或商店提交。
